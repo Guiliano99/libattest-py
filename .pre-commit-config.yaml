@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2025
+
+# SPDX-License-Identifier: Apache-2.0
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ./.venv/bin/python -m ruff check --fix
+        language: system
+        types: [python]
+        exclude: (^|/)test
+
+      - id: ruff-format
+        name: ruff format
+        entry: ./.venv/bin/python -m ruff format
+        language: system
+        types: [python]
+
+      - id: pyupgrade
+        name: pyupgrade
+        entry: ./.venv/bin/python -m pyupgrade --py311-plus
+        language: system
+        types: [python]
+
+      - id: pylint
+        name: pylint
+        entry: ./.venv/bin/python -m pylint --rcfile=pyproject.toml
+        language: system
+        types: [python]
+
+      - id: reuse
+        name: reuse lint-file
+        entry: ./.venv/bin/python -m reuse --no-multiprocessing lint-file
+        language: system
+
+      - id: codespell
+        name: codespell
+        entry: ./.venv/bin/python -m codespell_lib
+        language: system
+        types: [text, python, markdown]

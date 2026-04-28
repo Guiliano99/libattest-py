@@ -1,0 +1,9 @@
+version = 1
+SPDX-PackageName = "default-package"
+SPDX-PackageDownloadLocation = "UNKNOWN"
+
+[[annotations]]
+path = ["CHANGELOG.md", "README.md", "LICENSE", "scripts/**", ".github/skills/**", "pyrightconfig.json"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Copyright 2025"
+SPDX-License-Identifier = "Apache-2.0"

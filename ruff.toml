@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026
+#
+# SPDX-License-Identifier: Apache-2.0
+
+src = ["src", "scripts"]
+exclude = ["venv*", "tests", "unit_tests", ".pre-commit-cache"]
+# pq_logic/fips/* is excluded because we use it "as is" from the original repo,
+# https://github.com/mjosaarinen/py-acvp-pqc, and we keep it that way
+line-length = 120
+respect-gitignore = true
+
+[lint]
+ignore = ["D415", "D400", "D213", "D212", "D203"]
+#typing-modules = [""]
+select = [
+    "F", # pyflakes
+    "E", "W", # Pycodestyle
+    "I", # isort
+    "D",  # docstring checker
+    "T", # temporary rules.
+    # As an example, show `print` statements in the code.
+]
+
+[lint.per-file-ignores]
+"scripts/**/*.py" = ["T"]
+"main.py" = ["T"]
+
+[lint.isort]
+known-first-party = ["src"]
+
+
+[format]
+docstring-code-format = true
+exclude = ["D213", "D212", "D211", "D200"]
+indent-style = "space"
+#skip-magic-trailing-comma = true
+
+# D200 fits-on-one-line
+# D211 no-blank-line-before-class
+# D212 multi-line-summary-first-line
+# D213 multi-line-summary-second-line
+# D400 First line should end with a period
+# D415 ends-in-punctuation
+# because of RF # fixable with # noqa: D417 on the function.
+# spaces and D203, 211 are incompatible.

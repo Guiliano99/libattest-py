@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright 2025
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ------- Pipeline wide settings -------
+stages:
+  - setup
+  - fast_checks
+  - meta
+  - heavy_checks
+
+variables:
+  PYTHON_VERSION: "3.12"
+  VENV_DIR: ".venv"
+  VENV_BIN: ".venv/bin"
+
+# If you use shell runners, ensure $PYTHON_VERSION is installed and on PATH.
+# Optionally preload pyenv/asdf in before_script (commented out example):
+# before_script:
+#   - export PATH="$HOME/.pyenv/bin:$HOME/.pyenv/shims:$PATH"
+#   - pyenv local "${PYTHON_VERSION}" || true
+
+# Cache the virtualenv between pipelines/runs; key changes when requirements change.
+cache:
+  key:
+    files:
+      - requirements.txt
+      - requirements-dev.txt
+  paths:
+    - .venv/
+
+# ---------- Build venv once ----------
+setup_env:
+  stage: setup
+  tags: [shell]        # Use your shell runner tag here; remove if not needed
+  script:
+    - python --version
+    - 'python -c "import sys; import platform; print(sys.version); print(platform.python_version())"'
+    - |
+      if [ ! -d "$VENV_DIR" ]; then
+        python -m venv "$VENV_DIR"
+        "$VENV_BIN/python" -m pip install --upgrade pip wheel
+        # toolchain
+        "$VENV_BIN/pip" install ruff reuse robocop codespell pylint pyright
+        # project deps
+        if [ -f requirements.txt ]; then "$VENV_BIN/pip" install -r requirements.txt; fi
+        if [ -f requirements-dev.txt ]; then "$VENV_BIN/pip" install -r requirements-dev.txt; fi
+      else
+        echo "Using cached venv at $VENV_DIR"
+      fi
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - .venv/
+
+# ---------- Stage 1: fast/basic checks ----------
+ruff_lint:
+  stage: fast_checks
+  needs: [setup_env]
+  script:
+    - "$VENV_BIN/ruff" check
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: ruff-junit.xml  # if you later emit JUnit
+  rules:
+    - when: on_success
+
+license_check:
+  stage: fast_checks
+  needs: [setup_env]
+  script:
+    - "$VENV_BIN/reuse" lint
+
+spelling_check:
+  stage: fast_checks
+  needs: [setup_env]
+  script:
+    - >
+      "$VENV_BIN/codespell" .
+      --check-filenames
+      --skip '*.html,*.pem,*.xml,*venv*,*fips/*.py,*/announcement.py,./data/rfc_test_vectors/*'
+
+dependency_check:
+  stage: fast_checks
+  needs: [setup_env]
+  script:
+    - |
+      echo "Checking for outdated packages..."
+      OUTDATED=$("$VENV_BIN/pip" list --outdated --format=columns)
+      if [ -z "$OUTDATED" ]; then
+        echo "All packages are up to date!"
+      else
+        echo "Outdated packages detected, think about it:"
+        echo "$OUTDATED"
+        exit 1
+      fi
+  allow_failure: true   # informational
+
+# ---------- Stage 1.5: repo meta checks ----------
+version_check:
+  stage: meta
+  script:
+    - |
+      VERSION=$(awk -F'"' '/^version = / {print $2; exit}' pyproject.toml)
+      if [ -z "$VERSION" ]; then
+        echo "Error: Could not extract version from pyproject.toml."
+        exit 1
+      fi
+      if ! grep -E "^# ${VERSION}$" CHANGELOG.md; then
+        echo "Error: CHANGELOG.md does not contain an entry for version $VERSION."
+        exit 1
+      fi
+
+# ---------- Stage 2: heavier checks ----------
+pylint:
+  stage: heavy_checks
+  needs: [setup_env, ruff_lint, license_check, spelling_check]
+  script:
+    - '$VENV_BIN/pylint --fail-under=9.4 resources'
+
+unit_test:
+  stage: heavy_checks
+  needs: [setup_env, ruff_lint, license_check, spelling_check]
+  variables:
+    OQS_INSTALL_PATH: "/root/_oqs"   # keep if your tests expect it
+  script:
+    - '$VENV_BIN/python -m unittest discover -s unit_tests'
+
+type_check:
+  stage: heavy_checks
+  needs: [setup_env]
+  script:
+    - '$VENV_BIN/pyright'
+  allow_failure: true

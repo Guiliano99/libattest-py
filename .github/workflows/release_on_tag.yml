@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright 2026
+#
+# SPDX-License-Identifier: Apache-2.0
+name: Publish release on tag
+
+on:
+  # Trigger only for version tags. This prevents accidental releases from branch pushes.
+  push:
+    tags:
+      - "v*.*.*"
+
+# Required so GitHub Actions can create a GitHub Release entry.
+permissions:
+  contents: write
+
+jobs:
+  prepare_release_data:
+    name: Prepare release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      tag_name: ${{ steps.validation.outputs.tag_name }}
+      tag_version: ${{ steps.validation.outputs.tag_version }}
+
+    steps:
+      # Step 1: Checkout repository to read project metadata and changelog.
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # Step 2: Validate the tag against pyproject and changelog using Python helper script.
+      - name: Validate tag matches pyproject.toml version
+        id: validation
+        run: |
+          python scripts/release/release_metadata.py validate-tag
+
+      # Step 3: Build release notes once and share them with all publish jobs.
+      - name: Create release notes from CHANGELOG.md
+        run: |
+          python scripts/release/release_metadata.py write-release-notes \
+            --version "${{ steps.validation.outputs.tag_version }}" \
+            --output RELEASE_NOTES.md
+
+      # Step 4: Upload notes so the GitHub and GitLab jobs can consume the same text.
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+
+  publish_github:
+    name: Publish GitHub release
+    runs-on: ubuntu-24.04
+    needs: prepare_release_data
+
+    steps:
+      - name: Download release notes artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
+      # This job is dedicated to GitHub release publication only.
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare_release_data.outputs.tag_name }}
+          name: Release ${{ needs.prepare_release_data.outputs.tag_name }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+
+  publish_gitlab:
+    name: Publish GitLab release
+    runs-on: ubuntu-24.04
+    needs: prepare_release_data
+
+    steps:
+      - name: Download release notes artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
+      # Validate required GitLab settings before calling the GitLab API.
+      - name: Validate GitLab release configuration
+        run: |
+          if [ -z "${{ secrets.GITLAB_TOKEN }}" ]; then
+            echo "Missing required secret: GITLAB_TOKEN"
+            exit 1
+          fi
+          if [ -z "${{ vars.GITLAB_PROJECT_ID }}" ]; then
+            echo "Missing required variable: GITLAB_PROJECT_ID"
+            exit 1
+          fi
+
+      # This job is dedicated to GitLab release publication only.
+      - name: Create GitLab release
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_PROJECT_ID: ${{ vars.GITLAB_PROJECT_ID }}
+          GITLAB_API_URL: ${{ vars.GITLAB_API_URL }}
+          TAG_NAME: ${{ needs.prepare_release_data.outputs.tag_name }}
+        run: |
+          API_URL="${GITLAB_API_URL:-https://gitlab.com/api/v4}"
+
+          DESCRIPTION=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.dumps(Path("RELEASE_NOTES.md").read_text(encoding="utf-8")))
+          PY
+          )
+
+          PAYLOAD=$(cat <<JSON
+          {
+            "name": "Release ${TAG_NAME}",
+            "tag_name": "${TAG_NAME}",
+            "description": ${DESCRIPTION},
+            "ref": "${TAG_NAME}"
+          }
+          JSON
+          )
+
+          # Use PUT first (idempotent update), then POST if release does not exist yet.
+          HTTP_CODE=$(curl -sS -o /tmp/gitlab-release.json -w "%{http_code}" \
+            --request PUT \
+            --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "${PAYLOAD}" \
+            "${API_URL}/projects/${GITLAB_PROJECT_ID}/releases/${TAG_NAME}")
+
+          if [ "$HTTP_CODE" = "404" ]; then
+            HTTP_CODE=$(curl -sS -o /tmp/gitlab-release.json -w "%{http_code}" \
+              --request POST \
+              --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data "${PAYLOAD}" \
+              "${API_URL}/projects/${GITLAB_PROJECT_ID}/releases")
+          fi
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "GitLab release API call failed with HTTP status: $HTTP_CODE"
+            cat /tmp/gitlab-release.json
+            exit 1
+          fi
+
+          echo "GitLab release published for ${TAG_NAME}."

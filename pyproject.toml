@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2025
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "default-package"
+version = "0.0.1"
+description = "Example project for python"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [
+    { name = "", email = "contact@example.com" }
+]
+license = { text = "Apache-2.0" }
+
+dependencies = []
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.136.0,<1.0.0",
+    "uvicorn>=0.35.0,<1.0.0",
+]
+dev = [
+    "safety==3.7.0",
+    "pylint[spelling]==4.0.5",
+    "reuse==6.2.0",
+    "ruff==0.15.11",
+    "pyupgrade==3.21.2",
+    "pyright[nodejs]==1.1.408",
+    "codespell==2.4.2",
+    "pre-commit==4.5.1",
+    "ty==0.0.31",
+    "pymarkdownlnt==0.9.36",
+]
+
+[tool.ty.src]
+include = ["src", "scripts"]
+exclude = ["tests/"]
+
+[tool.pylint.main]
+ignore = ["tests"]   # skip the tests directory
+
+[tool.pylint.format]
+max-line-length = 120
+

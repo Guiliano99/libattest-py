@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+      time: "10:15"
+      timezone: "Europe/Berlin"
+
+    allow:
+      - dependency-type: "development"
+
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+    versioning-strategy: "increase-if-necessary"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      Actions:
+        patterns:
+          - "*"

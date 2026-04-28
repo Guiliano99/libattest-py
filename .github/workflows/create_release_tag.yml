@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026
+#
+# SPDX-License-Identifier: Apache-2.0
+name: Create release tag
+
+on:
+  # Manual trigger so releases happen intentionally.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version override (example: 0.2.0). Leave empty to use pyproject.toml"
+        required: false
+        type: string
+
+# This workflow must be able to create and push tags.
+permissions:
+  contents: write
+
+jobs:
+  tag_release:
+    name: Create annotated Git tag from project version
+    runs-on: ubuntu-24.04
+
+    steps:
+      # Step 1: Fetch repository history and existing tags.
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Step 2: Resolve and validate release version via centralized Python helper.
+      - name: Resolve target version
+        id: target_version
+        run: |
+          python scripts/release/release_metadata.py resolve-version \
+            --input-version "${{ inputs.version }}"
+
+      # Step 3: Stop if the tag already exists locally or remotely.
+      - name: Ensure the release tag does not already exist
+        run: |
+          TAG_NAME="${{ steps.target_version.outputs.tag }}"
+
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists locally."
+            exit 1
+          fi
+
+          if git ls-remote --tags origin "refs/tags/$TAG_NAME" | grep -q "$TAG_NAME"; then
+            echo "Tag $TAG_NAME already exists on origin."
+            exit 1
+          fi
+
+      # Step 4: Create an annotated tag to keep release metadata in git history.
+      - name: Create annotated tag
+        run: |
+          TAG_NAME="${{ steps.target_version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+
+      # Step 5: Push the new tag to GitHub so tag-based release workflows can run.
+      - name: Push tag to origin
+        run: |
+          TAG_NAME="${{ steps.target_version.outputs.tag }}"
+          git push origin "$TAG_NAME"

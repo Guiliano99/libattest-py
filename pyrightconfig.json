@@ -1,0 +1,9 @@
+{
+  "include": ["./src"],
+  "exclude": [
+    "./unit_tests",
+    "./tests",
+    "./github",
+    ".pre-commit-cache/"
+  ]
+}

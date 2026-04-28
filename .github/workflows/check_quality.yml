@@ -1,0 +1,212 @@
+# SPDX-FileCopyrightText: Copyright 2025
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+name: Check code quality
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+# change this once here if you need a different Python
+env:
+  PYTHON_VERSION: "3.13"
+  VENV_DIR: ".venv"
+
+concurrency:
+  group: check-code-quality-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Build & cache the virtualenv once
+  setup_env:
+    runs-on: ubuntu-22.04
+    outputs:
+      cache-key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Compute cache key
+        id: key
+        run: |
+          REQ_HASH="no-req"
+          DEV_HASH="no-dev"
+          if [ -f requirements.txt ]; then
+            REQ_HASH=$(sha256sum requirements.txt | cut -d' ' -f1)
+          fi
+          if [ -f requirements-dev.txt ]; then
+            DEV_HASH=$(sha256sum requirements-dev.txt | cut -d' ' -f1)
+          fi
+          echo "key=${{ runner.os }}-py${{ env.PYTHON_VERSION }}-venv-${REQ_HASH}-${DEV_HASH}" >> $GITHUB_OUTPUT
+
+      - name: Cache virtualenv
+        id: cache-venv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: |
+            ${{ runner.os }}-py${{ env.PYTHON_VERSION }}-venv-
+
+      - name: Create venv (if cache miss)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv $VENV_DIR
+          $VENV_DIR/bin/python -m pip install --upgrade pip wheel
+          # install your tools & deps once
+          $VENV_DIR/bin/pip install ruff reuse codespell pylint pyright
+          if [ -f requirements.txt ]; then $VENV_DIR/bin/pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then $VENV_DIR/bin/pip install -r requirements-dev.txt; fi
+
+  # ---------- Stage 1 (fast checks) ----------
+  ruff_lint:
+    needs: setup_env
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: Ruff
+        run: $VENV_DIR/bin/ruff check
+
+  license_check:
+    needs: setup_env
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: REUSE
+        run: $VENV_DIR/bin/reuse lint
+
+  spelling_check:
+    needs: setup_env
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: Codespell
+        run: >
+          $VENV_DIR/bin/codespell . --check-filenames
+          --skip '*.html,*.pem,*.xml,*venv*,./data/**'
+
+  dependency_check:
+    needs: setup_env
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: Outdated deps
+        run: |
+          echo "Checking for outdated packages..."
+          OUTDATED=$($VENV_DIR/bin/pip list --outdated --format=columns)
+          if [ -z "$OUTDATED" ]; then
+            echo "All packages are up to date!"
+          else
+            echo "Outdated packages detected, think about it:"
+            echo "$OUTDATED"
+            exit 1
+          fi
+
+  version_check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ensure version is referenced in CHANGELOG.md
+        run: |
+          VERSION=$(awk -F'"' '/^version = / {print $2; exit}' pyproject.toml)
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not extract version from pyproject.toml."
+            exit 1
+          fi
+          if ! grep -E "^# ${VERSION}$" CHANGELOG.md; then
+            echo "Error: CHANGELOG.md does not contain an entry for version $VERSION."
+            exit 1
+          fi
+
+  # ---------- Stage 2 ----------
+  pylint:
+    needs: [setup_env, ruff_lint, license_check, spelling_check]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: Pylint
+        run: $VENV_DIR/bin/pylint --fail-under=9.4 src
+
+  unit_test:
+    needs: [setup_env, ruff_lint, license_check, spelling_check]
+    runs-on: ubuntu-22.04
+    env:
+      OQS_INSTALL_PATH: "/root/_oqs"   # keep if needed
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: Unit tests
+        run: $VENV_DIR/bin/python -m unittest discover -s tests
+
+  type_check:
+    needs: setup_env
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Restore virtualenv
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VENV_DIR }}
+          key: ${{ needs.setup_env.outputs.cache-key }}
+      - name: Pyright
+        run: $VENV_DIR/bin/pyright
