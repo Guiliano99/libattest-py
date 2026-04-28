@@ -28,12 +28,12 @@ dev = [
     "safety==3.7.0",
     "pylint[spelling]==4.0.5",
     "reuse==6.2.0",
-    "ruff==0.15.11",
+    "ruff==0.15.12",
     "pyupgrade==3.21.2",
-    "pyright[nodejs]==1.1.408",
+    "pyright[nodejs]==1.1.409",
     "codespell==2.4.2",
-    "pre-commit==4.5.1",
-    "ty==0.0.31",
+    "pre-commit==4.6.0",
+    "ty==0.0.32",
     "pymarkdownlnt==0.9.36",
 ]
 
