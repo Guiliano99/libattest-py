@@ -8,7 +8,7 @@ Per TPM spec Part 1 §16::
 
     name = nameAlg (2 bytes, big-endian) || H_{nameAlg}(TPMT_PUBLIC)
 
-Used by the verifier to implement the G1 key-binding check:
+Used by the verifier to check
 ``TPMS_CERTIFY_INFO.name == compute_tpm_name(tpmTPublic)``.
 
 References
