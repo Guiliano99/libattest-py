@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # EAR verdict
 # ---------------------------------------------------------------------------
@@ -23,6 +22,7 @@ class EarStatus(str, Enum):
     References
     ----------
     draft-ietf-rats-ar4si: Attestation Results for Secure Interactions
+
     """
 
     affirming = "affirming"
@@ -115,11 +115,6 @@ class AttestResult:
         Optional verifier route name or base URL.  Used to disambiguate
         when multiple verifiers handle the same evidence-type OID
         (e.g. two TPM verifiers, each with its own trust anchor).
-    is_asn1_evidence:
-        ``True`` when ``evidence`` is an already DER-encoded ASN.1 SEQUENCE
-        (e.g. ``TcgAttestCertify``) and should be embedded directly into
-        the bundle's ``ANY`` slot.  ``False`` (default) wraps the bytes in
-        an OCTET STRING — appropriate for opaque payloads such as JWTs.
 
     """
 
@@ -128,7 +123,6 @@ class AttestResult:
     media_type: str
     cert_chain: Path | str | None = None
     verifier_hint: str | None = None
-    is_asn1_evidence: bool = False
 
     def evidence_bytes(self) -> bytes:
         """Return evidence in the byte form required for HTTP submission."""
@@ -158,6 +152,7 @@ class BundleVerifyResult:
     routes:
         Names of the verifier routes that were dispatched to, parallel to
         ``per_statement``.
+
     """
 
     per_statement: tuple[VerifyResult, ...] = ()
@@ -166,9 +161,7 @@ class BundleVerifyResult:
     @property
     def accepted(self) -> bool:
         """Return ``True`` iff every statement was affirmed (and at least one)."""
-        return bool(self.per_statement) and all(
-            v.status == EarStatus.affirming for v in self.per_statement
-        )
+        return bool(self.per_statement) and all(v.status == EarStatus.affirming for v in self.per_statement)
 
     @property
     def first_failure(self) -> VerifyResult | None:
