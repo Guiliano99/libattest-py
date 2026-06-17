@@ -2,10 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-veraison_service.py
-====================
-Abstract FastAPI service base for Veraison-compatible attestation endpoints.
+"""Abstract FastAPI service base for Veraison-compatible attestation endpoints.
 
 Subclass :class:`VeraisonServiceBase`, implement the abstract methods, then
 call :meth:`~VeraisonServiceBase.run` to start the service — or access
@@ -29,30 +26,27 @@ References
 ----------
 https://github.com/veraison/docs/tree/main/api/challenge-response
 https://github.com/veraison/docs/tree/main/api/endorsement-provisioning
+
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-
-logger = logging.getLogger(__name__)
 
 import uvicorn
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import Response
 
 from libattest.verifier.endpoints import (
+    DEFAULT_VERIFICATION_PORT,
     PROVISIONING_BASE_PATH,
     PROVISIONING_MEDIA_TYPE,
     SESSION_MEDIA_TYPE,
     VERIFICATION_BASE_PATH,
     WELL_KNOWN_VERIFICATION_PATH,
-    DEFAULT_VERIFICATION_PORT,
 )
-
 
 # ---------------------------------------------------------------------------
 # Media types
@@ -88,6 +82,7 @@ class ServiceConfig:
     log_level:
         Uvicorn log level (``"debug"``, ``"info"``, ``"warning"``,
         ``"error"``, ``"critical"``).
+
     """
 
     host: str = "0.0.0.0"
@@ -127,7 +122,9 @@ class VeraisonServiceBase(ABC):
 
             # ... implement remaining abstract methods ...
 
+
         MyVeraisonService(port=9090).run()
+
     """
 
     def __init__(
@@ -135,15 +132,17 @@ class VeraisonServiceBase(ABC):
         port: int = DEFAULT_VERIFICATION_PORT,
         config: ServiceConfig | None = None,
     ) -> None:
+        """Register all Veraison API routes on the embedded FastAPI app."""
         self.port = port
         self._config = config or ServiceConfig()
-        self._app = self._register_routes(
-            FastAPI(title="Veraison Attestation Service", version="1.0")
-        )
+        self._app = self._register_routes(FastAPI(title="Veraison Attestation Service", version="1.0"))
 
     # -----------------------------------------------------------------------
     # Route registration
     # -----------------------------------------------------------------------
+
+    def _json_response(self, payload: object, media_type: str, status_code: int = 200) -> Response:
+        return Response(content=json.dumps(payload), media_type=media_type, status_code=status_code)
 
     def _register_routes(self, app: FastAPI) -> FastAPI:
 
@@ -151,8 +150,8 @@ class VeraisonServiceBase(ABC):
 
         @app.get(_WELL_KNOWN)
         async def _well_known() -> Response:
-            return Response(
-                content=json.dumps(self.get_verification_info()),
+            return self._json_response(
+                self.get_verification_info(),
                 media_type="application/json",
             )
 
@@ -162,8 +161,8 @@ class VeraisonServiceBase(ABC):
         async def _new_session(
             nonceSize: int = Query(default=32, alias="nonceSize"),
         ) -> Response:
-            return Response(
-                content=json.dumps(self.new_session(nonceSize)),
+            return self._json_response(
+                self.new_session(nonceSize),
                 media_type=_MT_SESSION,
                 status_code=201,
             )
@@ -174,8 +173,8 @@ class VeraisonServiceBase(ABC):
         async def _submit_evidence(session_id: str, request: Request) -> Response:
             body = await request.body()
             media_type = request.headers.get("content-type", "")
-            return Response(
-                content=json.dumps(self.submit_evidence(session_id, body, media_type)),
+            return self._json_response(
+                self.submit_evidence(session_id, body, media_type),
                 media_type=_MT_SESSION,
             )
 
@@ -183,8 +182,8 @@ class VeraisonServiceBase(ABC):
 
         @app.get(_VERIFICATION_BASE + "/session/{session_id}")
         async def _get_session(session_id: str) -> Response:
-            return Response(
-                content=json.dumps(self.get_session(session_id)),
+            return self._json_response(
+                self.get_session(session_id),
                 media_type=_MT_SESSION,
             )
 
@@ -200,8 +199,8 @@ class VeraisonServiceBase(ABC):
         @app.post(_PROVISIONING_BASE + "/submit")
         async def _submit_corim(request: Request) -> Response:
             body = await request.body()
-            return Response(
-                content=json.dumps(self.submit_corim(body)),
+            return self._json_response(
+                self.submit_corim(body),
                 media_type=_MT_PROVISIONING,
             )
 
@@ -209,8 +208,8 @@ class VeraisonServiceBase(ABC):
 
         @app.get(_PROVISIONING_BASE + "/session/{session_id}")
         async def _get_provisioning_session(session_id: str) -> Response:
-            return Response(
-                content=json.dumps(self.get_provisioning_session(session_id)),
+            return self._json_response(
+                self.get_provisioning_session(session_id),
                 media_type=_MT_PROVISIONING,
             )
 
@@ -238,6 +237,7 @@ class VeraisonServiceBase(ABC):
         -------
         dict
             JSON-serialisable discovery document.
+
         """
 
     @abstractmethod
@@ -254,6 +254,7 @@ class VeraisonServiceBase(ABC):
         dict
             Session document with at least ``nonce``, ``expiry``,
             ``accept``, and ``state`` fields.
+
         """
 
     @abstractmethod
@@ -280,6 +281,7 @@ class VeraisonServiceBase(ABC):
         dict
             Updated session document.  Set ``state`` to ``"complete"``
             when the result is ready.
+
         """
 
     @abstractmethod
@@ -300,6 +302,7 @@ class VeraisonServiceBase(ABC):
         ------
         fastapi.HTTPException
             404 if *session_id* is unknown; 410 if expired.
+
         """
 
     @abstractmethod
@@ -315,6 +318,7 @@ class VeraisonServiceBase(ABC):
         ------
         fastapi.HTTPException
             404 if *session_id* is unknown.
+
         """
 
     @abstractmethod
@@ -331,6 +335,7 @@ class VeraisonServiceBase(ABC):
         dict
             Provisioning session document with ``status``, optional
             ``failure-reason``, and ``expiry``.
+
         """
 
     @abstractmethod
@@ -351,6 +356,7 @@ class VeraisonServiceBase(ABC):
         ------
         fastapi.HTTPException
             404 if *session_id* is unknown.
+
         """
 
     @abstractmethod
@@ -366,6 +372,7 @@ class VeraisonServiceBase(ABC):
         ------
         fastapi.HTTPException
             404 if *session_id* is unknown.
+
         """
 
     # -----------------------------------------------------------------------
