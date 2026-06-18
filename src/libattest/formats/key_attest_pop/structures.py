@@ -2,299 +2,315 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ASN.1 structures for the KeyAttestPoP scheme (SPEC §DR-1, redesign v2).
+"""ASN.1 OID + UTF8String-JSON structures for TPM key attestation.
 
-Two SEQUENCEs:
+The v5 key-attestation nonce exchange keeps the outer CMP / ASN.1 layer simple
+for OpenSSL-based clients.  The type-specific request and response payloads are
+self-describing ASN.1 wrappers:
 
-* ``KeyAttestPoPChallenge`` — produced by the MockCA and carried inside
-  ``NonceResponse.responseParams`` as a typed ``ChallengeParam``.  Encrypts
-  a fresh challenge nonce ``C`` against the attester's SPKI.
+    KeyAttestChall ::= SEQUENCE { type OBJECT IDENTIFIER, value UTF8String }
+    KeyAttestResp  ::= SEQUENCE { type OBJECT IDENTIFIER, value UTF8String }
 
-      ``KeyAttestPoPChallenge ::= SEQUENCE {
-            algorithm  AlgorithmIdentifier,   -- decryption algorithm
-            value      OCTET STRING            -- ciphertext of C
-       }``
+``value`` contains deterministic JSON text.  The request JSON carries the AK /
+requested-key TPM Name and EK certificate chain.  The response JSON carries only
+``encSeed`` and ``encSecret``; the Verifier-generated ``seed`` is never sent to
+the client and is retained by the CA/RA for proof-of-possession verification.
 
-* ``KeyAttestPoPProof`` — produced by the attester and carried as a CSR
-  / certTemplate extension under ``KEY_ATTEST_POP_OID`` (and copied
-  verbatim onto the issued cert as an audit-only extension).  The bundle
-  to the verifier no longer carries any KeyAttestPoP statement; the PoP
-  loop is strictly between the attester and the MockCA.
-
-      ``KeyAttestPoPProof ::= SEQUENCE {
-            algorithm  AlgorithmIdentifier,   -- proof form
-            value      OCTET STRING            -- MAC bytes or signature bytes
-       }``
-
-The MockCA picks the **decryption algorithm** for the challenge:
-
-+-------------------------------------+--------------------------+
-| algorithm.algorithm OID             | algorithm.parameters     |
-+=====================================+==========================+
-| ``rsaEncryption`` (PKCS#1 v1.5)     | ``NULL``                 |
-| 1.2.840.113549.1.1.1                |                          |
-+-------------------------------------+--------------------------+
-| ``id-RSAES-OAEP``                   | ``RSAES-OAEP-params``    |
-| 1.2.840.113549.1.1.7                | (RFC 8017 §A.2.1)        |
-+-------------------------------------+--------------------------+
-
-The attester picks the **proof form**:
-
-+------------------------------+----------------------+--------------------+
-| algorithm.algorithm OID      | algorithm.parameters | value              |
-+==============================+======================+====================+
-| ``id-PasswordBasedMac``      | ``PBMParameter``     | ``PBMAC1(C, N)``   |
-| 1.2.840.113533.7.66.13       | (RFC 4210 §5.1.3.1)  | (32 B for SHA-256) |
-+------------------------------+----------------------+--------------------+
-| ``sha256WithRSAEncryption``  | ``NULL``             | RSA-SSA-PKCS1-v1.5 |
-| 1.2.840.113549.1.1.11        |                      | over SHA-256(N)    |
-+------------------------------+----------------------+--------------------+
-
-``N`` is the plaintext attestation nonce returned in ``NonceResponse.nonce``;
-``C`` is the plaintext challenge recovered from
-``KeyAttestPoPChallenge.value`` by RSA-decrypting with the attester's
-private key.
+``KeyAttestPoP`` remains a normal ASN.1 X.509 extension value containing a
+signature over the recovered ``seed``.
 """
 
 from __future__ import annotations
 
-import os
-from typing import Optional
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from pyasn1.codec.der import decoder as _der_decoder
 from pyasn1.codec.der import encoder as _der_encoder
 from pyasn1.type import namedtype, univ
-from pyasn1_alt_modules import rfc5280, rfc9480
+from pyasn1_alt_modules import rfc5280
 
-# ── OID constant + env override ─────────────────────────────────────────────
+from libattest.formats._oid_json import (
+    OidUtf8Json,
+    decode_oid_json_value,
+    prepare_oid_json_value,
+    resolve_env_oid,
+)
 
-#: Name of the env var used by all components in the stack to override
-#: the default OID for testing / namespace conflicts.  Read on demand by
-#: :func:`resolve_key_attest_pop_oid` — never cached at import time so
-#: docker-compose env changes take effect at process start.
 KEY_ATTEST_POP_OID_ENV: str = "KEY_ATTEST_POP_OID"
-
-#: Default dotted OID — a private-enterprise arc reserved for this demo.
 DEFAULT_KEY_ATTEST_POP_OID: str = "1.3.6.1.4.1.99999.2"
+
+KEY_ATTEST_CHALL_OID_ENV: str = "KEY_ATTEST_CHALL_OID"
+DEFAULT_KEY_ATTEST_CHALL_OID: str = "1.3.6.1.4.1.99999.1.1"
+
+KEY_ATTEST_RESP_OID_ENV: str = "KEY_ATTEST_RESP_OID"
+DEFAULT_KEY_ATTEST_RESP_OID: str = "1.3.6.1.4.1.99999.1.2"
+
+ID_SHA256_WITH_RSA_ENCRYPTION: str = "1.2.840.113549.1.1.11"
+ID_ECDSA_WITH_SHA256: str = "1.2.840.10045.4.3.2"
 
 
 def resolve_key_attest_pop_oid() -> str:
-    """Return the OID dotted string from env, falling back to the default."""
-    return os.environ.get(KEY_ATTEST_POP_OID_ENV, DEFAULT_KEY_ATTEST_POP_OID)
+    """Return the private extension OID for ``KeyAttestPoP``."""
+    return resolve_env_oid(KEY_ATTEST_POP_OID_ENV, DEFAULT_KEY_ATTEST_POP_OID)
 
 
-# ── Algorithm OID constants ─────────────────────────────────────────────────
-
-# Decryption algorithms accepted in ``KeyAttestPoPChallenge.algorithm``.
-
-#: ``rsaEncryption`` per RFC 8017 §A.1 — PKCS#1 v1.5 encryption padding.
-ID_RSA_ENCRYPTION: str = "1.2.840.113549.1.1.1"
-
-#: ``id-RSAES-OAEP`` per RFC 8017 §A.2.1 — OAEP encryption padding.  When
-#: this OID is used the algorithm parameters carry ``RSAES-OAEP-params``
-#: (hashFunc / maskGenFunc / pSourceFunc).
-ID_RSAES_OAEP: str = "1.2.840.113549.1.1.7"
-
-# Proof-form algorithms in ``KeyAttestPoPProof.algorithm``.
-
-#: ``id-PasswordBasedMac`` (RFC 4210 §5.1.3.1).  Used as
-#: ``KeyAttestPoPProof.algorithm.algorithm`` for the PBMAC form.  The
-#: parameters carry a ``PBMParameter`` SEQUENCE with the salt + iter + owf
-#: + mac the attester used so the MockCA can reproduce BASEKEY derivation.
-ID_PASSWORD_BASED_MAC: str = "1.2.840.113533.7.66.13"
-
-#: ``sha256WithRSAEncryption`` (RFC 4055).  Used as
-#: ``KeyAttestPoPProof.algorithm.algorithm`` for the RSA-SHA256 form.
-ID_SHA256_WITH_RSA_ENCRYPTION: str = "1.2.840.113549.1.1.11"
+def resolve_key_attest_chall_oid() -> str:
+    """Return the JSON schema OID carried in ``KeyAttestChall.type``."""
+    return resolve_env_oid(KEY_ATTEST_CHALL_OID_ENV, DEFAULT_KEY_ATTEST_CHALL_OID)
 
 
-# ── ASN.1 schema ────────────────────────────────────────────────────────────
+def resolve_key_attest_resp_oid() -> str:
+    """Return the JSON schema OID carried in ``KeyAttestResp.type``."""
+    return resolve_env_oid(KEY_ATTEST_RESP_OID_ENV, DEFAULT_KEY_ATTEST_RESP_OID)
 
 
-class KeyAttestPoPChallenge(univ.Sequence):
-    """``KeyAttestPoPChallenge ::= SEQUENCE { algorithm, value }``.
+class KeyAttestChall(OidUtf8Json):
+    """``KeyAttestChall ::= SEQUENCE { type OID, value UTF8String }``."""
 
-    Carried inside ``NonceResponse.responseParams`` as a
-    ``ChallengeParam {type = KEY_ATTEST_POP_OID, value = DER(this)}``.
 
-    The attester decrypts ``value`` using the algorithm in ``algorithm``
-    and recovers the plaintext challenge nonce ``C``.  Possession of
-    ``C`` is the proof of possession (used as the PBMAC1 password in the
-    PBMAC form, or simply discarded in the RSA-SHA256 form where the
-    binding comes from signing the attestation nonce ``N`` directly).
-    """
+class KeyAttestResp(OidUtf8Json):
+    """``KeyAttestResp ::= SEQUENCE { type OID, value UTF8String }``."""
+
+
+class KeyAttestPoP(univ.Sequence):
+    """``KeyAttestPoP ::= SEQUENCE { signatureAlgorithm, signature }``."""
 
     componentType = namedtype.NamedTypes(
-        namedtype.NamedType("algorithm", rfc5280.AlgorithmIdentifier()),
-        namedtype.NamedType("value", univ.OctetString()),
+        namedtype.NamedType("signatureAlgorithm", rfc5280.AlgorithmIdentifier()),
+        namedtype.NamedType("signature", univ.BitString()),
     )
 
 
-class KeyAttestPoPProof(univ.Sequence):
-    """``KeyAttestPoPProof ::= SEQUENCE { algorithm, value }``.
+@dataclass(frozen=True)
+class VerifierMakeCredentialRequest:
+    """CA/RA JSON request asking the Verifier to run MakeCredential."""
 
-    Algorithm-tagged proof structure (CMS-style).  ``algorithm``
-    discriminates the PoP form; ``value`` carries the raw output:
+    transaction_id: str
+    ak_name: bytes
+    ek_cert_chain: Sequence[bytes]
+    policy: Mapping[str, Any] | None = None
 
-    +------------------------------+----------------------+--------------------+
-    | algorithm.algorithm OID      | algorithm.parameters | value              |
-    +==============================+======================+====================+
-    | id-PasswordBasedMac          | PBMParameter         | ``PBMAC1(C, N)``   |
-    | (1.2.840.113533.7.66.13)     | (RFC 4210 §5.1.3.1)  | (32 B for SHA-256) |
-    +------------------------------+----------------------+--------------------+
-    | sha256WithRSAEncryption      | NULL                 | RSA-SSA-PKCS1-v1.5 |
-    | (1.2.840.113549.1.1.11)      |                      | over SHA-256(N)    |
-    +------------------------------+----------------------+--------------------+
 
-    Lives only as a CSR / cert extension under ``KEY_ATTEST_POP_OID``.
-    Removed from the AttestationBundle in v2 — the PoP loop is strictly
-    between attester and MockCA; the verifier never sees this structure.
+@dataclass(frozen=True)
+class VerifierMakeCredentialResult:
+    """Verifier JSON result for delegated MakeCredential.
+
+    ``seed`` is the CA/RA-side activation secret used for later PoP
+    verification.  It MUST NOT be sent to the client.  ``encSeed`` and
+    ``encSecret`` are copied into ``KeyAttestResp`` for TPM2_ActivateCredential.
     """
 
-    componentType = namedtype.NamedTypes(
-        namedtype.NamedType("algorithm", rfc5280.AlgorithmIdentifier()),
-        namedtype.NamedType("value", univ.OctetString()),
+    seed: bytes
+    enc_seed: bytes
+    enc_secret: bytes
+
+
+def _decode_hex_field(data: Mapping[str, Any], key: str, owner: str) -> bytes:
+    try:
+        value = data[key]
+    except KeyError as exc:
+        raise ValueError(f"{owner}: missing field {key}") from exc
+    if not isinstance(value, str):
+        raise ValueError(f"{owner}: field {key} must be a hex string")
+    try:
+        return bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError(f"{owner}: field {key} must be a valid hex string") from exc
+
+
+def prepare_key_attest_chall(
+    ak_name: bytes,
+    ek_cert_chain: Sequence[bytes],
+) -> KeyAttestChall:
+    """Build a client-to-CA/RA ``KeyAttestChall`` OID + JSON value."""
+    payload = {
+        "akName": ak_name.hex(),
+        "ekCertChain": [cert.hex() for cert in ek_cert_chain],
+    }
+    return prepare_oid_json_value(KeyAttestChall, resolve_key_attest_chall_oid(), payload)
+
+
+def prepare_key_attest_resp(enc_seed: bytes, enc_secret: bytes) -> KeyAttestResp:
+    """Build the client-facing response from Verifier MakeCredential output."""
+    payload = {
+        "encSeed": enc_seed.hex(),
+        "encSecret": enc_secret.hex(),
+    }
+    return prepare_oid_json_value(KeyAttestResp, resolve_key_attest_resp_oid(), payload)
+
+
+def prepare_key_attest_pop(
+    signature_algorithm: rfc5280.AlgorithmIdentifier,
+    signature: bytes,
+) -> KeyAttestPoP:
+    """Build a ``KeyAttestPoP`` extension value."""
+    value = KeyAttestPoP()
+    value["signatureAlgorithm"] = signature_algorithm
+    value["signature"] = univ.BitString.fromOctetString(signature)
+    return value
+
+
+def key_attest_chall_json_value(value: KeyAttestChall) -> dict[str, Any]:
+    """Return the decoded application JSON payload from ``KeyAttestChall``."""
+    return decode_oid_json_value(
+        value,
+        expected_oid=resolve_key_attest_chall_oid(),
+        name="KeyAttestChall",
     )
 
 
-# ── Builders ────────────────────────────────────────────────────────────────
+def key_attest_resp_json_value(value: KeyAttestResp) -> dict[str, Any]:
+    """Return the decoded application JSON payload from ``KeyAttestResp``."""
+    return decode_oid_json_value(
+        value,
+        expected_oid=resolve_key_attest_resp_oid(),
+        name="KeyAttestResp",
+    )
 
 
-def prepare_key_attest_pop_challenge(
-    algorithm: rfc5280.AlgorithmIdentifier,
-    value: bytes,
-) -> KeyAttestPoPChallenge:
-    """Populate a :class:`KeyAttestPoPChallenge` SEQUENCE.
-
-    :param algorithm: a populated :class:`rfc5280.AlgorithmIdentifier`
-        whose ``algorithm`` is one of :data:`ID_RSA_ENCRYPTION` or
-        :data:`ID_RSAES_OAEP`.  Use the helpers in
-        :mod:`libattest.crypto.rsa_encryption` to build it.
-    :param value: the RSA ciphertext bytes (the encrypted challenge ``C``).
-    """
-    challenge = KeyAttestPoPChallenge()
-    challenge["algorithm"] = algorithm
-    challenge["value"] = value
-    return challenge
+def verifier_make_credential_request_to_json(
+    request: VerifierMakeCredentialRequest,
+) -> dict[str, Any]:
+    """Encode a Verifier MakeCredential request as JSON-safe values."""
+    data: dict[str, Any] = {
+        "transactionID": request.transaction_id,
+        "akName": request.ak_name.hex(),
+        "ekCertChain": [cert.hex() for cert in request.ek_cert_chain],
+    }
+    if request.policy is not None:
+        data["policy"] = dict(request.policy)
+    return data
 
 
-def prepare_key_attest_pop_proof(
-    algorithm: rfc5280.AlgorithmIdentifier,
-    value: bytes,
-) -> KeyAttestPoPProof:
-    """Populate a :class:`KeyAttestPoPProof` SEQUENCE.
-
-    :param algorithm: a populated :class:`rfc5280.AlgorithmIdentifier`
-        whose ``algorithm`` is one of :data:`ID_PASSWORD_BASED_MAC`
-        (parameters = PBMParameter) or
-        :data:`ID_SHA256_WITH_RSA_ENCRYPTION` (parameters = NULL).  Use
-        the helpers in :mod:`libattest.formats.key_attest_pop.pbmac`
-        to build it.
-    :param value: the per-algorithm proof bytes — HMAC output for PBMAC,
-        RSA signature bytes for the RSA-SHA256 form.
-    """
-    proof = KeyAttestPoPProof()
-    proof["algorithm"] = algorithm
-    proof["value"] = value
-    return proof
+def verifier_make_credential_result_from_json(
+    data: Mapping[str, Any],
+) -> VerifierMakeCredentialResult:
+    """Decode Verifier MakeCredential JSON with hex-encoded byte strings."""
+    return VerifierMakeCredentialResult(
+        seed=_decode_hex_field(data, "seed", "VerifierMakeCredentialResult"),
+        enc_seed=_decode_hex_field(data, "encSeed", "VerifierMakeCredentialResult"),
+        enc_secret=_decode_hex_field(data, "encSecret", "VerifierMakeCredentialResult"),
+    )
 
 
-# ── DER encode / decode helpers ─────────────────────────────────────────────
+def verifier_make_credential_result_to_json(
+    result: VerifierMakeCredentialResult,
+) -> dict[str, str]:
+    """Encode Verifier MakeCredential result as JSON-safe hex strings."""
+    return {
+        "seed": result.seed.hex(),
+        "encSeed": result.enc_seed.hex(),
+        "encSecret": result.enc_secret.hex(),
+    }
 
 
-def encode_key_attest_pop_challenge(challenge: KeyAttestPoPChallenge) -> bytes:
-    """DER-encode a :class:`KeyAttestPoPChallenge`."""
-    return _der_encoder.encode(challenge)
+def encode_to_der(value: Any) -> bytes:
+    """DER-encode any pyasn1 structure."""
+    return bytes(_der_encoder.encode(value))
 
 
-def decode_key_attest_pop_challenge(der: bytes) -> KeyAttestPoPChallenge:
-    """Decode a :class:`KeyAttestPoPChallenge` from DER.
+def decode_key_attest_chall(der: bytes) -> KeyAttestChall:
+    """DER-decode bytes into a KeyAttestChall structure."""
+    return _decode_der(der, KeyAttestChall(), "KeyAttestChall")
 
-    :raises ValueError: when the bytes do not decode as the SEQUENCE.
-    """
+
+def decode_key_attest_resp(der: bytes) -> KeyAttestResp:
+    """DER-decode bytes into a KeyAttestResp structure."""
+    return _decode_der(der, KeyAttestResp(), "KeyAttestResp")
+
+
+def decode_key_attest_pop(der: bytes) -> KeyAttestPoP:
+    """DER-decode bytes into a KeyAttestPoP structure."""
+    return _decode_der(der, KeyAttestPoP(), "KeyAttestPoP")
+
+
+def _decode_der(der: bytes, asn1_spec, name: str):
     try:
-        decoded, rest = _der_decoder.decode(
-            der, asn1Spec=KeyAttestPoPChallenge()
-        )
+        decoded, rest = _der_decoder.decode(der, asn1Spec=asn1_spec)
     except Exception as exc:  # noqa: BLE001
-        raise ValueError(
-            f"failed to decode KeyAttestPoPChallenge: {exc}"
-        ) from exc
+        raise ValueError(f"failed to decode {name}: {exc}") from exc
     if rest:
-        raise ValueError("trailing bytes after KeyAttestPoPChallenge SEQUENCE")
-    return decoded  # type: ignore[return-value]
+        raise ValueError(f"trailing bytes after {name} SEQUENCE")
+    return decoded
 
 
-def encode_key_attest_pop_proof(proof: KeyAttestPoPProof) -> bytes:
-    """DER-encode a :class:`KeyAttestPoPProof`."""
-    return _der_encoder.encode(proof)
+def key_attest_chall_ak_name(value: KeyAttestChall) -> bytes:
+    """Extract the AK name bytes from a KeyAttestChall (hex-decoded from JSON payload)."""
+    return _decode_hex_field(key_attest_chall_json_value(value), "akName", "KeyAttestChall")
 
 
-def decode_key_attest_pop_proof(der: bytes) -> KeyAttestPoPProof:
-    """Decode a :class:`KeyAttestPoPProof` from DER.
-
-    :raises ValueError: when the bytes do not decode as the SEQUENCE.
-    """
-    try:
-        decoded, rest = _der_decoder.decode(der, asn1Spec=KeyAttestPoPProof())
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"failed to decode KeyAttestPoPProof: {exc}") from exc
-    if rest:
-        raise ValueError("trailing bytes after KeyAttestPoPProof SEQUENCE")
-    return decoded  # type: ignore[return-value]
-
-
-# ── Field accessors ─────────────────────────────────────────────────────────
-
-
-def challenge_algorithm_oid(challenge: KeyAttestPoPChallenge) -> str:
-    """Return ``challenge.algorithm.algorithm`` as a dotted string."""
-    return str(challenge["algorithm"]["algorithm"])
+def key_attest_chall_ek_cert_chain(value: KeyAttestChall) -> list[bytes]:
+    """Extract the EK certificate chain from a KeyAttestChall as a list of DER bytes."""
+    payload = key_attest_chall_json_value(value)
+    chain = payload.get("ekCertChain")
+    if not isinstance(chain, list):
+        raise ValueError("KeyAttestChall: ekCertChain must be an array")
+    result: list[bytes] = []
+    for item in chain:
+        if not isinstance(item, str):
+            raise ValueError("KeyAttestChall: ekCertChain entries must be hex strings")
+        try:
+            result.append(bytes.fromhex(item))
+        except ValueError as exc:
+            raise ValueError("KeyAttestChall: ekCertChain entries must be valid hex") from exc
+    return result
 
 
-def challenge_value(challenge: KeyAttestPoPChallenge) -> bytes:
-    """Return the raw ciphertext bytes from ``challenge.value``."""
-    return bytes(challenge["value"])
+def key_attest_resp_enc_seed(value: KeyAttestResp) -> bytes:
+    """Extract the encSeed bytes from a KeyAttestResp (hex-decoded from JSON payload)."""
+    return _decode_hex_field(key_attest_resp_json_value(value), "encSeed", "KeyAttestResp")
 
 
-def proof_algorithm_oid(proof: KeyAttestPoPProof) -> str:
-    """Return ``proof.algorithm.algorithm`` as a dotted string."""
-    return str(proof["algorithm"]["algorithm"])
+def key_attest_resp_enc_secret(value: KeyAttestResp) -> bytes:
+    """Extract the encSecret bytes from a KeyAttestResp (hex-decoded from JSON payload)."""
+    return _decode_hex_field(key_attest_resp_json_value(value), "encSecret", "KeyAttestResp")
 
 
-def proof_value(proof: KeyAttestPoPProof) -> bytes:
-    """Return the raw bytes of ``proof.value``.
+def key_attest_pop_algorithm_oid(value: KeyAttestPoP) -> str:
+    """Return the signature algorithm OID string from a KeyAttestPoP."""
+    return str(value["signatureAlgorithm"]["algorithm"])
 
-    Interpretation depends on ``proof.algorithm.algorithm``:
 
-    * For ``id-PasswordBasedMac`` — HMAC output bytes.
-    * For ``sha256WithRSAEncryption`` — RSA signature bytes.
-    """
-    return bytes(proof["value"])
+def key_attest_pop_signature(value: KeyAttestPoP) -> bytes:
+    """Return the raw signature bytes from a KeyAttestPoP."""
+    return bytes(value["signature"].asOctets())
 
 
 __all__ = [
+    "DEFAULT_KEY_ATTEST_CHALL_OID",
     "DEFAULT_KEY_ATTEST_POP_OID",
-    "ID_PASSWORD_BASED_MAC",
-    "ID_RSAES_OAEP",
-    "ID_RSA_ENCRYPTION",
+    "DEFAULT_KEY_ATTEST_RESP_OID",
+    "ID_ECDSA_WITH_SHA256",
     "ID_SHA256_WITH_RSA_ENCRYPTION",
+    "KEY_ATTEST_CHALL_OID_ENV",
     "KEY_ATTEST_POP_OID_ENV",
-    "KeyAttestPoPChallenge",
-    "KeyAttestPoPProof",
-    "challenge_algorithm_oid",
-    "challenge_value",
-    "decode_key_attest_pop_challenge",
-    "decode_key_attest_pop_proof",
-    "encode_key_attest_pop_challenge",
-    "encode_key_attest_pop_proof",
-    "prepare_key_attest_pop_challenge",
-    "prepare_key_attest_pop_proof",
-    "proof_algorithm_oid",
-    "proof_value",
+    "KEY_ATTEST_RESP_OID_ENV",
+    "KeyAttestChall",
+    "KeyAttestPoP",
+    "KeyAttestResp",
+    "VerifierMakeCredentialRequest",
+    "VerifierMakeCredentialResult",
+    "decode_key_attest_chall",
+    "decode_key_attest_pop",
+    "decode_key_attest_resp",
+    "encode_to_der",
+    "key_attest_chall_ak_name",
+    "key_attest_chall_ek_cert_chain",
+    "key_attest_chall_json_value",
+    "key_attest_pop_algorithm_oid",
+    "key_attest_pop_signature",
+    "key_attest_resp_enc_secret",
+    "key_attest_resp_enc_seed",
+    "key_attest_resp_json_value",
+    "prepare_key_attest_chall",
+    "prepare_key_attest_pop",
+    "prepare_key_attest_resp",
+    "resolve_key_attest_chall_oid",
     "resolve_key_attest_pop_oid",
+    "resolve_key_attest_resp_oid",
+    "verifier_make_credential_request_to_json",
+    "verifier_make_credential_result_from_json",
+    "verifier_make_credential_result_to_json",
 ]
-
-
-# Marker variable to fail-fast on missing pyasn1_alt_modules.
-_DEP_CHECK: Optional[type] = rfc9480.PBMParameter

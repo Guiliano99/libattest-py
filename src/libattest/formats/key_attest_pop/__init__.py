@@ -2,93 +2,88 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""KeyAttestPoP — TPM key-attestation PoP via RSA-decrypt-challenge + PBMAC1 / RSA-SHA256.
+"""TPM key-attestation structures and signature-only PoP helpers."""
 
-This package owns:
-
-* The ASN.1 structures for the wire format
-  (:mod:`libattest.formats.key_attest_pop.structures`) —
-  ``KeyAttestPoPChallenge`` (MockCA → attester) and
-  ``KeyAttestPoPProof`` (attester → MockCA).
-* The PoP-form computation helpers — both PBMAC1 and RSA-SHA256 —
-  alongside the dispatching verifier
-  (:mod:`libattest.formats.key_attest_pop.pbmac`).
-
-The PBMAC1 implementation is a verbatim port of
-``cmp-test-suite/resources/cryptoutils.py::compute_password_based_mac``
-so the algorithm stays in lockstep with the canonical cmp-test-suite
-version.
-
-Co-locating the algorithm and the SEQUENCE it populates means callers
-import a single module, and the structure / encoder / decoder /
-compute / verify functions all stay in lockstep when the design
-evolves.
-"""
-
-from libattest.formats.key_attest_pop.pbmac import (
-    DEFAULT_ITERATIONS,
-    DEFAULT_SALT_LEN,
-    HMAC_SHA256_OID,
-    PBM_FORM,
-    RSA_FORM,
-    SHA256_OID,
-    compute_key_attest_pop_proof,
-    compute_key_attest_pop_proof_pbm,
-    compute_key_attest_pop_proof_rsa_sha256,
-    compute_password_based_mac,
-    verify_key_attest_pop_proof,
+from libattest.formats.key_attest_pop.pop import (
+    build_ecdsa_sha256_algorithm,
+    build_sha256_rsa_algorithm,
+    compute_key_attest_pop,
+    verify_key_attest_pop,
 )
 from libattest.formats.key_attest_pop.structures import (
+    DEFAULT_KEY_ATTEST_CHALL_OID,
     DEFAULT_KEY_ATTEST_POP_OID,
-    ID_PASSWORD_BASED_MAC,
-    ID_RSA_ENCRYPTION,
-    ID_RSAES_OAEP,
+    DEFAULT_KEY_ATTEST_RESP_OID,
+    ID_ECDSA_WITH_SHA256,
     ID_SHA256_WITH_RSA_ENCRYPTION,
+    KEY_ATTEST_CHALL_OID_ENV,
     KEY_ATTEST_POP_OID_ENV,
-    KeyAttestPoPChallenge,
-    KeyAttestPoPProof,
-    challenge_algorithm_oid,
-    challenge_value,
-    decode_key_attest_pop_challenge,
-    decode_key_attest_pop_proof,
-    encode_key_attest_pop_challenge,
-    encode_key_attest_pop_proof,
-    prepare_key_attest_pop_challenge,
-    prepare_key_attest_pop_proof,
-    proof_algorithm_oid,
-    proof_value,
+    KEY_ATTEST_RESP_OID_ENV,
+    KeyAttestChall,
+    KeyAttestPoP,
+    KeyAttestResp,
+    VerifierMakeCredentialRequest,
+    VerifierMakeCredentialResult,
+    decode_key_attest_chall,
+    decode_key_attest_pop,
+    decode_key_attest_resp,
+    encode_to_der,
+    key_attest_chall_ak_name,
+    key_attest_chall_ek_cert_chain,
+    key_attest_chall_json_value,
+    key_attest_pop_algorithm_oid,
+    key_attest_pop_signature,
+    key_attest_resp_enc_secret,
+    key_attest_resp_enc_seed,
+    key_attest_resp_json_value,
+    prepare_key_attest_chall,
+    prepare_key_attest_pop,
+    prepare_key_attest_resp,
+    resolve_key_attest_chall_oid,
     resolve_key_attest_pop_oid,
+    resolve_key_attest_resp_oid,
+    verifier_make_credential_request_to_json,
+    verifier_make_credential_result_from_json,
+    verifier_make_credential_result_to_json,
 )
 
 __all__ = [
-    "DEFAULT_ITERATIONS",
+    "DEFAULT_KEY_ATTEST_CHALL_OID",
     "DEFAULT_KEY_ATTEST_POP_OID",
-    "DEFAULT_SALT_LEN",
-    "HMAC_SHA256_OID",
-    "ID_PASSWORD_BASED_MAC",
-    "ID_RSAES_OAEP",
-    "ID_RSA_ENCRYPTION",
+    "DEFAULT_KEY_ATTEST_RESP_OID",
+    "ID_ECDSA_WITH_SHA256",
     "ID_SHA256_WITH_RSA_ENCRYPTION",
+    "KEY_ATTEST_CHALL_OID_ENV",
     "KEY_ATTEST_POP_OID_ENV",
-    "KeyAttestPoPChallenge",
-    "KeyAttestPoPProof",
-    "PBM_FORM",
-    "RSA_FORM",
-    "SHA256_OID",
-    "challenge_algorithm_oid",
-    "challenge_value",
-    "compute_key_attest_pop_proof",
-    "compute_key_attest_pop_proof_pbm",
-    "compute_key_attest_pop_proof_rsa_sha256",
-    "compute_password_based_mac",
-    "decode_key_attest_pop_challenge",
-    "decode_key_attest_pop_proof",
-    "encode_key_attest_pop_challenge",
-    "encode_key_attest_pop_proof",
-    "prepare_key_attest_pop_challenge",
-    "prepare_key_attest_pop_proof",
-    "proof_algorithm_oid",
-    "proof_value",
+    "KEY_ATTEST_RESP_OID_ENV",
+    "KeyAttestChall",
+    "KeyAttestPoP",
+    "KeyAttestResp",
+    "VerifierMakeCredentialRequest",
+    "VerifierMakeCredentialResult",
+    "build_ecdsa_sha256_algorithm",
+    "build_sha256_rsa_algorithm",
+    "compute_key_attest_pop",
+    "decode_key_attest_chall",
+    "decode_key_attest_pop",
+    "decode_key_attest_resp",
+    "encode_to_der",
+    "key_attest_chall_ak_name",
+    "key_attest_chall_ek_cert_chain",
+    "key_attest_chall_json_value",
+    "key_attest_pop_algorithm_oid",
+    "key_attest_pop_signature",
+    "key_attest_resp_enc_secret",
+    "key_attest_resp_enc_seed",
+    "key_attest_resp_json_value",
+    "prepare_key_attest_chall",
+    "prepare_key_attest_pop",
+    "prepare_key_attest_resp",
+    "resolve_key_attest_chall_oid",
     "resolve_key_attest_pop_oid",
-    "verify_key_attest_pop_proof",
+    "resolve_key_attest_resp_oid",
+    "verifier_make_credential_request_to_json",
+    "verifier_make_credential_result_from_json",
+    "verifier_make_credential_result_to_json",
+    "verify_key_attest_pop",
 ]
