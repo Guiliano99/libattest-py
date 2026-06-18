@@ -36,8 +36,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from libattest.formats.csrattest import NonceResponseASN1 as NonceResponse
-from libattest.formats.csrattest import NonceResponseValueASN1 as NonceResponseValue
+from libattest.formats.csrattest import NonceResponse
 from libattest.types import AttestResult
 from libattest.verifier.endpoints import (
     CORIM_MEDIA_TYPE,
@@ -157,7 +156,6 @@ class AttestClientConfig:
         tls_verify: bool | str = True,
     ) -> "AttestClientConfig":
         """Return client settings for a verifier on localhost."""
-
         endpoints = VerifierEndpointConfig.localhost(
             port=port,
             provisioning_port=provisioning_port,
@@ -175,7 +173,6 @@ class AttestClientConfig:
     @property
     def endpoints(self) -> VerifierEndpointConfig:
         """Return the shared endpoint configuration for this client."""
-
         return VerifierEndpointConfig(
             host=self.host,
             verification_port=self.verification_port,
@@ -219,7 +216,7 @@ class AttestClient:
     --------
     ::
 
-        from verifier.attest_client import AttestClient, AttestClientConfig
+        from attest_client import AttestClient, AttestClientConfig
 
         cfg = AttestClientConfig(host="veraison.example.com", scheme="https")
         with AttestClient(cfg) as client:
@@ -250,16 +247,6 @@ class AttestClient:
         self._session = requests.Session()
         self._session.verify = self._cfg.tls_verify
         self.endpoints = self._cfg.endpoints
-
-    # -----------------------------------------------------------------------
-    # URL builders
-    # -----------------------------------------------------------------------
-
-    def _verification_url(self, path: str) -> str:
-        return self.endpoints.verification_url(path)
-
-    def _provisioning_url(self, path: str) -> str:
-        return self.endpoints.provisioning_url(path)
 
     # -----------------------------------------------------------------------
     # Provider dispatch
@@ -421,16 +408,6 @@ class AttestClient:
             raise ValueError("oid is required when CMP NonceResponse has no type field")
 
         return self.generate_evidence(selected_oid, nonce)
-
-    def generate_evidence_from_cmp_nonce_responses(
-        self,
-        nonce_responses: NonceResponseValue,
-    ) -> list[AttestResult]:
-        """Generate provider evidence for all typed CMP nonce responses."""
-        results = []
-        for nonce_response in nonce_responses:
-            results.append(self.generate_evidence_from_cmp_nonce_response(nonce_response))
-        return results
 
     def generate_cmp_attestation_flow_result(
         self,
