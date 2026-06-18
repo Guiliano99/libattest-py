@@ -24,6 +24,8 @@ select = [
 [lint.per-file-ignores]
 "scripts/**/*.py" = ["T"]
 "main.py" = ["T"]
+# TPM demo entrypoints are readable CLI narratives; print is intentional.
+"docker/tpm-demo/*.py" = ["T"]
 
 [lint.isort]
 known-first-party = ["src"]
