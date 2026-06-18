@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# client image -- the libattest attestation client (tpm2-tss + tpm2-pytss).
+#
+#   1. build tpm2-tss (the TSS stack) from a *pinned* source release,
+#   2. pip-install tpm2-pytss, which compiles its CFFI extension *against* the
+#      tpm2-tss we just installed (hence PKG_CONFIG_PATH below),
+#   3. install libattest's pure-Python runtime/test dependencies.
+#
+# This container holds no TPM of its own; it reaches the IBM simulator in the
+# tpmsim container over the mssim TCP TCTI (see docker-compose.yml). The
+# libattest source tree is bind-mounted over /workspace for live editing.
+#
+# Why the tpm2-tss version is PINNED: tpm2-pytss builds its bindings by
+# preprocessing the installed tpm2-tss headers and feeding them to cffi.cdef().
+# An unreleased `master` can emit a version macro as a struct initializer
+# (`{ 1, 2, 1, 108 }`) that the cffi parser rejects -- the exact failure this
+# project hit when tpm2-tss was cloned from master. A release tag avoids it.
+# =============================================================================
+FROM ubuntu:24.04
+
+# tpm2-tss release tag (no leading "v", e.g. 4.1.3, 4.1.0). Override with:
+#   --build-arg TPM2_TSS_VERSION=<tag>
+ARG TPM2_TSS_VERSION=4.1.3
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- build + runtime dependencies -------------------------------------------
+#   autoconf/automake/libtool/autoconf-archive/m4/pkg-config : tpm2-tss autotools
+#   libltdl-dev                                              : ltdl m4 macros (LT_LIB_DLLOAD) ./bootstrap needs
+#   build-essential                                          : compiler/make (tss + pytss CFFI)
+#   libssl-dev                                               : crypto backend for tss
+#   libcurl4-openssl-dev/libjson-c-dev/uuid-dev              : tss FAPI deps (pytss links FAPI)
+#   python3.13/-dev/-venv (deadsnakes PPA)/libffi-dev        : building + running pytss on 3.13
+#   software-properties-common/gnupg                         : add-apt-repository for deadsnakes
+#   git/wget/ca-certificates                                 : fetching sources
+# keyutils-py (a libattest runtime dependency) requires Python >=3.13, which
+# Ubuntu 24.04 does not ship by default, so we pull python3.13 from the deadsnakes
+# PPA and build the venv (and tpm2-pytss) against it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        autoconf automake libtool libltdl-dev pkg-config autoconf-archive m4 \
+        build-essential \
+        libssl-dev \
+        libcurl4-openssl-dev libjson-c-dev uuid-dev \
+        python3 python3.13 python3.13-dev python3.13-venv libffi-dev \
+        git wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 1. tpm2-tss from a pinned release --------------------------------------
+RUN git clone --depth 1 --branch "${TPM2_TSS_VERSION}" \
+        https://github.com/tpm2-software/tpm2-tss.git /tmp/tpm2-tss \
+    && cd /tmp/tpm2-tss \
+    && ./bootstrap \
+    && ./configure \
+        --prefix=/usr/local \
+        --disable-doxygen-doc \
+        --disable-dependency-tracking \
+    && make -j"$(nproc)" \
+    && make install \
+    # make the freshly installed shared libs discoverable by the loader
+    && echo "/usr/local/lib" > /etc/ld.so.conf.d/tpm2-tss.conf \
+    && ldconfig \
+    && cd / && rm -rf /tmp/tpm2-tss
+
+# --- 2. Python environment + tpm2-pytss + libattest deps --------------------
+# pytss is a source build; it locates tpm2-tss through pkg-config, so the .pc
+# files we installed under /usr/local must be on PKG_CONFIG_PATH for pip install.
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+    LD_LIBRARY_PATH=/usr/local/lib
+
+# isolated venv keeps the system Python clean (python3.13 for keyutils-py >=3.13)
+RUN python3.13 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# Install tpm2-pytss while the tpm2-tss pkg-config files are present, then
+# libattest's pure-Python runtime/test deps. The source tree itself is
+# bind-mounted over /workspace by docker-compose for live editing.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir 'tpm2-pytss>=2.3.0' \
+    && pip install --no-cache-dir \
+        pyasn1 pyasn1-alt-modules requests 'cryptography>=48.0.0,<49.0.0' pytest \
+    && pip install --no-cache-dir 'keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git'
+
+# --- 3. runtime environment --------------------------------------------------
+WORKDIR /workspace
+# mssim TCTI -> the tpmsim service; docker-compose can override the host.
+ENV TCTI="mssim:host=tpmsim,port=2321" \
+    TSS2_LOG="esys+none" \
+    PYTHONPATH="/workspace/src"
+
+# Default to an interactive shell so the image works as a toolbox against a
+# simulator started in another terminal. docker-compose overrides this for the
+# one-shot demo service.
+CMD ["bash"]

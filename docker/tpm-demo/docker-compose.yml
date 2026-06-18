@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+# TPM simulator/demo compose setup for libattest-py.
+#
+# Quick start (no local TPM libraries needed — Docker is sufficient):
+#   make tpm-build          # build images once
+#   make tpm-test           # run TPM attestation tests
+#   make tpm-demo           # run the platform + key demo scripts
+#
+# Individual compose commands:
+#   docker compose -f docker/tpm-demo/docker-compose.yml build
+#   docker compose -f docker/tpm-demo/docker-compose.yml run --rm test
+#   docker compose -f docker/tpm-demo/docker-compose.yml run --rm demo
+#   docker compose -f docker/tpm-demo/docker-compose.yml run --rm client  # interactive shell
+#   docker compose -f docker/tpm-demo/docker-compose.yml down -v
+#
+# Services:
+#   tpmsim  - IBM software TPM (always started; no profile).
+#   test    - Runs pytest tests against tpmsim (no profile; one-shot).
+#   demo    - Runs the attestation demo scripts (profile: demo).
+#   client  - Interactive shell for manual exploration (profile: client).
+
+services:
+  tpmsim:
+    build:
+      context: ../..
+      dockerfile: docker/tpm-demo/Dockerfile.tpmsim
+    image: libattest-tpmsim:latest
+    container_name: libattest-tpmsim
+    ports:
+      # Use non-default host ports so this stack can run beside another local
+      # simulator that already occupies host ports 2321/2322.
+      # Override with TPMSIM_COMMAND_PORT=2321 TPMSIM_PLATFORM_PORT=2322 if
+      # you specifically want the canonical mssim ports on the host.
+      - "${TPMSIM_COMMAND_PORT:-12321}:2321"
+      - "${TPMSIM_PLATFORM_PORT:-12322}:2322"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/2321"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  client:
+    build:
+      context: ../..
+      dockerfile: docker/tpm-demo/Dockerfile.client
+    image: libattest-tpm-client:latest
+    container_name: libattest-tpm-client
+    user: "${UID:-1000}:${GID:-1000}"
+    depends_on:
+      tpmsim:
+        condition: service_healthy
+    environment:
+      TCTI: mssim:host=tpmsim,port=2321
+      TSS2_LOG: esys+none
+      PYTHONPATH: /workspace/src
+    volumes:
+      - ../..:/workspace
+    working_dir: /workspace
+    command: ["bash"]
+    profiles:
+      - client
+
+  # One-shot test runner: starts tpmsim automatically (via depends_on), runs
+  # pytest, then exits.  No profile so `docker compose run --rm test` works
+  # without any extra flags.  Use `make tpm-test` for the convenient alias.
+  test:
+    image: libattest-tpm-client:latest
+    build:
+      context: ../..
+      dockerfile: docker/tpm-demo/Dockerfile.client
+    depends_on:
+      tpmsim:
+        condition: service_healthy
+    environment:
+      TCTI: mssim:host=tpmsim,port=2321
+      TSS2_LOG: esys+none
+      PYTHONPATH: /workspace/src
+    volumes:
+      - ../..:/workspace
+    working_dir: /workspace
+    command: ["python", "-m", "pytest", "docker/tpm-demo/test_demo.py", "-v"]
+
+  demo:
+    image: libattest-tpm-client:latest
+    build:
+      context: ../..
+      dockerfile: docker/tpm-demo/Dockerfile.client
+    depends_on:
+      tpmsim:
+        condition: service_healthy
+    environment:
+      TCTI: mssim:host=tpmsim,port=2321
+      TSS2_LOG: esys+none
+      PYTHONPATH: /workspace/src
+    volumes:
+      - ../..:/workspace
+    working_dir: /workspace
+    command: ["python", "docker/tpm-demo/demo.py"]
+    profiles:
+      - demo

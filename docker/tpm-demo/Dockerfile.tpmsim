@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# tpmsim image -- the IBM Software TPM 2.0 simulator (`tpm_server`).
+#
+# This is the "hardware" the attestation client talks to. It is deliberately
+# minimal: the IBM simulator is standalone C and needs only a compiler and
+# OpenSSL -- NOT tpm2-tss and NOT Python. The TSS stack (tpm2-tss + tpm2-pytss)
+# lives in Dockerfile.client, which reaches this container over the mssim TCP
+# TCTI (command port 2321, platform port 2322).
+#
+# Built from the upstream ibmswtpm2 git repo, pinned to a release tag. Ubuntu
+# 24.04 ships OpenSSL 3.x; the IBM source has a hard `#error Untested OpenSSL
+# version` guard in TpmToOsslMath.h, so the revision must be new enough to know
+# OpenSSL 3. rev183-2024-08-02 is the latest tag (Aug 2024) and builds against
+# OpenSSL 3; the legacy rev1637 (2019) only builds on OpenSSL 1.1.x (Ubuntu 20.04).
+# =============================================================================
+FROM ubuntu:24.04
+
+# IBM TPM source revision: a git tag in the ibmswtpm2 repo. Must understand
+# OpenSSL 3.x on Ubuntu 24.04. Override with:  --build-arg IBMTPM_REV=<tag>
+# (list tags: git ls-remote --tags https://git.code.sf.net/p/ibmswtpm2/tpm2)
+ARG IBMTPM_REV=rev183-2024-08-02
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libssl-dev git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone the IBM source, check out the pinned tag, and build the src/ tree. The
+# resulting binary is src/tpm_server.
+RUN git clone https://git.code.sf.net/p/ibmswtpm2/tpm2 /tmp/ibmswtpm2 \
+    && git -C /tmp/ibmswtpm2 checkout --quiet "${IBMTPM_REV}" \
+    && make -C /tmp/ibmswtpm2/src -j"$(nproc)" \
+    && cp /tmp/ibmswtpm2/src/tpm_server /usr/local/bin/tpm_server \
+    && rm -rf /tmp/ibmswtpm2
+
+# tpm_server writes its NV state file (NVChip) to the working directory.
+WORKDIR /tpmstate
+
+# 2321 = TPM command channel, 2322 = platform channel. The simulator binds all
+# interfaces, so the client container can reach it by service name.
+EXPOSE 2321 2322
+
+# -rm = remanufacture: wipe NV/state on launch so every container start is a
+# clean, reproducible TPM. Drop it (and mount /tpmstate) if you want persistence.
+CMD ["tpm_server", "-rm"]
