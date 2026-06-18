@@ -11,7 +11,6 @@ from typing import Union
 from urllib.parse import urlparse
 
 from pyasn1.codec.der import decoder as der_decoder
-from pyasn1.codec.der import encoder as der_encoder
 from pyasn1.type import univ
 
 from libattest.formats.csrattest import AttestationBundle
@@ -39,7 +38,6 @@ class VerifierRoutingPolicy:
 
     def validate_hint(self, hint: str | None) -> None:
         """Reject direct URL hints unless policy explicitly allows them."""
-
         if not hint or not _is_url_hint(hint):
             return
         if not self.allow_unregistered_verifier_urls:
@@ -78,12 +76,10 @@ class VerifierRoute:
 
     def matches_evidence_type(self, evidence_type: str | None) -> bool:
         """Return whether this route is registered for the evidence type."""
-
         return evidence_type is not None and evidence_type in self.evidence_types
 
     def matches_hint(self, hint: str | None) -> bool:
         """Return whether a hint selects this route."""
-
         if hint is None:
             return False
         if hint == self.name:
@@ -108,14 +104,14 @@ class VerifierRoute:
         ------
         VerifierRouteError
             If the route has no endpoint configured.
+
         """
         if isinstance(self.endpoint, VerifierEndpointConfig):
             return self.endpoint
         if isinstance(self.endpoint, str):
             return VerifierEndpointConfig.from_url(self.endpoint)
         raise VerifierRouteError(
-            f"Route {self.name!r} has no endpoint configured; "
-            "set endpoint=VerifierEndpointConfig(...) or a URL string"
+            f"Route {self.name!r} has no endpoint configured; set endpoint=VerifierEndpointConfig(...) or a URL string"
         )
 
     def new_session_url(self) -> str:
@@ -170,6 +166,7 @@ class VerifierRouter:
         policy: VerifierRoutingPolicy | None = None,
         nonce_ttl: float = _DEFAULT_NONCE_TTL,
     ) -> None:
+        """Initialize with an optional routing policy and nonce TTL."""
         self.policy = policy or VerifierRoutingPolicy()
         self._nonce_ttl = nonce_ttl
         self._routes: dict[str, VerifierRoute] = {}
@@ -179,7 +176,6 @@ class VerifierRouter:
     @property
     def routes(self) -> dict[str, VerifierRoute]:
         """Return registered routes keyed by route name."""
-
         return dict(self._routes)
 
     def register(
@@ -198,7 +194,6 @@ class VerifierRouter:
         exposes ``new_session_url()`` and ``submit_evidence_url(session_id)``
         for the Veraison challenge-response scheme.
         """
-
         evidence_type_set = {str(evidence_type) for evidence_type in evidence_types}
         self._routes[name] = VerifierRoute(
             name=name,
@@ -225,7 +220,6 @@ class VerifierRouter:
         nonce: bytes | None = None,
     ) -> VerifierRoute:
         """Resolve a verifier route using nonce, hint, evidence type, then default."""
-
         self._evict_expired_nonces()
 
         if nonce is not None:
@@ -257,7 +251,6 @@ class VerifierRouter:
         hint: str | None = None,
     ) -> bytes:
         """Request a nonce from the selected route and remember the route."""
-
         route = self.resolve(evidence_type=evidence_type, hint=hint)
         nonce = route.verifier.get_nonce(size)
         if nonce:
@@ -277,7 +270,6 @@ class VerifierRouter:
         hint: str | None = None,
     ) -> VerifyResult:
         """Verify evidence with the route selected for the nonce or metadata."""
-
         route = self.resolve(evidence_type=evidence_type, hint=hint, nonce=nonce)
         result = route.verifier.verify_token(token_bytes, media_type, nonce)
         if nonce is not None:
@@ -323,6 +315,7 @@ class VerifierRouter:
         BundleVerifyResult
             Aggregated outcome with one :class:`VerifyResult` per statement
             and the parallel list of route names that were dispatched to.
+
         """
         decoded = bundle
         if isinstance(bundle, (bytes, bytearray)):
@@ -332,24 +325,17 @@ class VerifierRouter:
         n = len(statements)
 
         if nonces is not None and len(nonces) != n:
-            raise ValueError(
-                f"nonces length {len(nonces)} does not match {n} statements"
-            )
+            raise ValueError(f"nonces length {len(nonces)} does not match {n} statements")
         if hints is not None and len(hints) != n:
-            raise ValueError(
-                f"hints length {len(hints)} does not match {n} statements"
-            )
+            raise ValueError(f"hints length {len(hints)} does not match {n} statements")
         if media_types is not None and len(media_types) != n:
-            raise ValueError(
-                f"media_types length {len(media_types)} does not match {n} statements"
-            )
+            raise ValueError(f"media_types length {len(media_types)} does not match {n} statements")
 
         verdicts: list[VerifyResult] = []
         route_names: list[str] = []
 
         for i, statement in enumerate(statements):
             stmt_oid = str(statement["type"])
-            stmt_bytes = bytes(der_encoder.encode(statement["stmt"]))
             # The Any field encodes as the inner DER plus the explicit ANY
             # tag-length prefix.  Strip the ANY wrapper: the encoded value
             # is identical to the raw bytes that prepare_*_attestation_statement
@@ -373,8 +359,7 @@ class VerifierRouter:
                 route_names.append("")
                 continue
 
-            effective_media_type = media_type or getattr(route.verifier, "media_type",
-                                                         "application/octet-stream")
+            effective_media_type = media_type or getattr(route.verifier, "media_type", "application/octet-stream")
             verdict = route.verifier.verify_token(stmt_bytes, effective_media_type, nonce)
             verdicts.append(verdict)
             route_names.append(route.name)
@@ -384,7 +369,10 @@ class VerifierRouter:
 
             logger.debug(
                 "Statement %d  oid=%s  route=%r  status=%s",
-                i, stmt_oid, route.name, verdict.status.value,
+                i,
+                stmt_oid,
+                route.name,
+                verdict.status.value,
             )
 
         return BundleVerifyResult(

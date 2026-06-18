@@ -8,6 +8,7 @@ References
 ----------
 draft-ietf-rats-ar4si: Attestation Results for Secure Interactions
   https://datatracker.ietf.org/doc/draft-ietf-rats-ar4si/
+
 """
 
 from __future__ import annotations
@@ -15,10 +16,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +48,7 @@ def parse_ear_verdict(ear_jwt: str) -> dict[str, str]:
     ValueError
         If *ear_jwt* is not a well-formed JWT or its payload cannot be
         base64-decoded or JSON-parsed.
+
     """
     parts = ear_jwt.split(".")
     if len(parts) < 2:
@@ -58,10 +58,7 @@ def parse_ear_verdict(ear_jwt: str) -> dict[str, str]:
         payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * pad))
     except Exception as exc:
         raise ValueError(f"Failed to decode EAR JWT payload: {exc}") from exc
-    return {
-        name: str(submod.get("ear.status", "unknown"))
-        for name, submod in payload.get("submods", {}).items()
-    }
+    return {name: str(submod.get("ear.status", "unknown")) for name, submod in payload.get("submods", {}).items()}
 
 
 def verify_ear_jwt(ear_jwt: str, public_key: "ec.EllipticCurvePublicKey") -> bool:
@@ -81,6 +78,7 @@ def verify_ear_jwt(ear_jwt: str, public_key: "ec.EllipticCurvePublicKey") -> boo
     -------
     bool
         ``True`` when the signature is valid, ``False`` on any error.
+
     """
     try:
         from cryptography.exceptions import InvalidSignature

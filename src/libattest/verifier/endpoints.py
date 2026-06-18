@@ -80,6 +80,7 @@ class VerifierEndpointConfig:
         ------
         ValueError
             If *url* has no scheme or host.
+
         """
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
@@ -136,6 +137,4 @@ class VerifierEndpointConfig:
 
     def provisioning_session_url(self, session_id: str) -> str:
         """Return the endorsement-provisioning session URL."""
-        return self.provisioning_url(
-            PROVISIONING_SESSION_PATH_TEMPLATE.format(session_id=session_id)
-        )
+        return self.provisioning_url(PROVISIONING_SESSION_PATH_TEMPLATE.format(session_id=session_id))
