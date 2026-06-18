@@ -88,7 +88,6 @@ CertificateInput: TypeAlias = rfc9480.CMPCertificate | LimitedCertChoices | Othe
 
 def _prepare_stmt(stmt: StatementPayload) -> univ.Sequence | univ.OctetString | univ.Any:
     """Coerce raw DER bytes into `Any` for the open-type statement field."""
-
     if isinstance(stmt, bytes):
         return univ.Any(stmt)
     return stmt
@@ -99,7 +98,6 @@ def prepare_attestation_statement(
     stmt: StatementPayload,
 ) -> AttestationStatement:
     """Build an `AttestationStatement` from an OID and open-type payload."""
-
     value = AttestationStatement()
     value["type"] = stmt_id
     value["stmt"] = _prepare_stmt(stmt)
@@ -113,32 +111,14 @@ def prepare_opaque_attestation_statement(
     """Build a statement for a non-ASN.1 payload such as a JWT.
 
     The payload is DER-wrapped as an OCTET STRING because ``stmt`` is an ASN.1
-    open type.  Use :func:`prepare_asn1_attestation_statement` when the
-    evidence is already a DER-encoded ASN.1 structure.
+    open type.
     """
-
     wrapped_payload = encoder.encode(univ.OctetString(payload))
     return prepare_attestation_statement(stmt_id, wrapped_payload)
 
 
-def prepare_asn1_attestation_statement(
-    stmt_id: univ.ObjectIdentifier,
-    der_payload: bytes,
-) -> AttestationStatement:
-    """Build a statement for evidence that is already a DER-encoded ASN.1 value.
-
-    Unlike :func:`prepare_opaque_attestation_statement`, the DER bytes are
-    embedded directly as an open-type ``Any`` without an additional OCTET STRING
-    wrapper.  Use this when the evidence is a SEQUENCE such as
-    ``TcgAttestCertify``.
-    """
-
-    return prepare_attestation_statement(stmt_id, der_payload)
-
-
 def _as_limited_cert_choice(cert: CertificateInput) -> LimitedCertChoices:
     """Convert supported certificate inputs into `LimitedCertChoices`."""
-
     if isinstance(cert, LimitedCertChoices):
         return cert
     if isinstance(cert, rfc9480.CMPCertificate):
@@ -153,7 +133,6 @@ def prepare_attestation_bundle(
     certs: Iterable[CertificateInput] | None = None,
 ) -> AttestationBundle:
     """Build an `AttestationBundle` from statements and optional certs."""
-
     value = AttestationBundle()
     value["attestations"].extend(attestations)
     if certs is not None:
@@ -168,31 +147,24 @@ def prepare_multi_statement_bundle(
     """Build an `AttestationBundle` from multiple :class:`AttestResult`-like values.
 
     For each result, the OID is taken from ``.oid`` and the evidence from
-    ``.evidence_bytes()``.  Statements are wrapped according to the result's
-    ``is_asn1_evidence`` flag (when present):
-
-    * ``is_asn1_evidence=True``  → :func:`prepare_asn1_attestation_statement`
-    * ``is_asn1_evidence=False`` → :func:`prepare_opaque_attestation_statement`
-
-    Results without that flag default to opaque (OCTET STRING) wrapping —
-    matching the existing single-result helper.
+    ``.evidence_bytes()``.  Each statement is wrapped as an opaque OCTET STRING
+    via :func:`prepare_opaque_attestation_statement` — matching the existing
+    single-result helper.
 
     Parameters
     ----------
     results:
         Iterable of ``AttestResult`` instances (or objects with the same
-        ``oid`` / ``evidence_bytes()`` / ``is_asn1_evidence`` shape).
+        ``oid`` / ``evidence_bytes()`` shape).
     certs:
         Optional certificate chain shared by all statements (e.g. AK chain).
+
     """
     statements: list[AttestationStatement] = []
     for result in results:
         oid = univ.ObjectIdentifier(result.oid)
         evidence = result.evidence_bytes()
-        if getattr(result, "is_asn1_evidence", False):
-            statements.append(prepare_asn1_attestation_statement(oid, evidence))
-        else:
-            statements.append(prepare_opaque_attestation_statement(oid, evidence))
+        statements.append(prepare_opaque_attestation_statement(oid, evidence))
     return prepare_attestation_bundle(statements, certs=certs)
 
 
@@ -221,6 +193,7 @@ def pem_chain_to_cmp_certs(pem: str | Path) -> list[rfc9480.CMPCertificate]:
         If *pem* contains no certificate blocks.
     pyasn1.error.SubstrateUnderrunError
         If a DER block cannot be decoded as an X.509 certificate.
+
     """
     pem_text = Path(pem).read_text() if isinstance(pem, Path) else pem
     matches = _PEM_CERT_PATTERN.findall(pem_text)
@@ -234,9 +207,31 @@ def pem_chain_to_cmp_certs(pem: str | Path) -> list[rfc9480.CMPCertificate]:
     return certs
 
 
+def find_attestation_statements(
+    attestation_bundle: AttestationBundle,
+    stmt_id: str | univ.ObjectIdentifier,
+) -> list[AttestationStatement]:
+    """Return all statements in a bundle whose ``type`` matches *stmt_id*.
+
+    Parameters
+    ----------
+    attestation_bundle:
+        The decoded bundle to search.
+    stmt_id:
+        Statement type OID, as dotted string or :class:`univ.ObjectIdentifier`.
+
+    Returns
+    -------
+    list[AttestationStatement]
+        Matching statements in bundle order; empty when none match.
+
+    """
+    wanted = str(stmt_id)
+    return [statement for statement in attestation_bundle["attestations"] if str(statement["type"]) == wanted]
+
+
 def get_attestation_bundle_certs(attestation_bundle: AttestationBundle) -> list[rfc9480.CMPCertificate]:
     """Return X.509 certificates from an attestation bundle."""
-
     if not attestation_bundle["certs"].isValue:
         return []
 
