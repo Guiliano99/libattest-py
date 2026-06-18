@@ -8,6 +8,7 @@ References
 ----------
 RFC 9782: Entity Attestation Token (EAT) Media Types
   https://www.rfc-editor.org/rfc/rfc9782
+
 """
 
 from __future__ import annotations

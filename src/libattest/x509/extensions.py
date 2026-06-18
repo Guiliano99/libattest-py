@@ -9,11 +9,12 @@ Currently exposes:
 * The Conceptual Messages Wrapper (CMW) extension defined in
   :rfc-draft:`draft-ietf-rats-msg-wrap-23` §4.4 — see :class:`CMW` and
   :func:`parse_cmw_extension_value`.
-* The KeyAttestPoP extension (SPEC §DR-1, §DR-8) — an X.509 v3 extension
-  whose OID is :func:`resolve_key_attest_pop_oid` and whose value is a
-  DER-encoded :class:`~libattest.formats.key_attest_pop.KeyAttestPoPProof`.
+* The KeyAttestPoP extension — an X.509 v3 extension whose OID is
+  :func:`resolve_key_attest_pop_oid` and whose value is a DER-encoded
+  :class:`~libattest.formats.key_attest_pop.KeyAttestPoP`.
 
-Both are non-critical (CMW per draft §4.4.6, KeyAttestPoP per SPEC §DR-8).
+CMW is non-critical per draft §4.4.6.  ``KeyAttestPoP`` criticality is selected
+by the certificate profile.
 
 CMW (draft-ietf-rats-msg-wrap-23 §4.4)
 --------------------------------------
@@ -66,8 +67,8 @@ from pyasn1.codec.der import decoder as _der_decoder
 from pyasn1.type import char, namedtype, univ
 
 from libattest.formats.key_attest_pop.structures import (
-    KeyAttestPoPProof,
-    decode_key_attest_pop_proof,
+    KeyAttestPoP,
+    decode_key_attest_pop,
     resolve_key_attest_pop_oid,
 )
 
@@ -231,15 +232,13 @@ def get_key_attest_pop_oid() -> univ.ObjectIdentifier:
 ID_KEY_ATTEST_POP_DOTTED: str = resolve_key_attest_pop_oid()
 
 #: Module-level alias for the env-resolved OID as a pyasn1 OID.
-ID_KEY_ATTEST_POP: univ.ObjectIdentifier = univ.ObjectIdentifier(
-    ID_KEY_ATTEST_POP_DOTTED
-)
+ID_KEY_ATTEST_POP: univ.ObjectIdentifier = univ.ObjectIdentifier(ID_KEY_ATTEST_POP_DOTTED)
 
 
 class KeyAttestPoPCriticalityWarning(UserWarning):
     """Warning category emitted when the KeyAttestPoP extension is critical.
 
-    Per SPEC §DR-8 the extension is non-critical (audit-trail only).
+    Some profiles mark this private extension critical so legacy clients cannot ignore it.
     Subclasses :class:`UserWarning` so test code can promote to error via
     ``warnings.filterwarnings("error", ...)``.
     """
@@ -250,31 +249,31 @@ def warn_if_key_attest_pop_critical(critical: bool) -> None:
     if critical:
         msg = (
             f"KeyAttestPoP ({ID_KEY_ATTEST_POP_DOTTED}) extension is marked "
-            "critical; SPEC §DR-8 specifies critical=false (audit-trail "
-            "extension; no relying-party blocking semantics)."
+            "critical. This is allowed only when the certificate profile "
+            "requires legacy clients to reject requests that do not understand it."
         )
         logger.warning(msg)
         warnings.warn(msg, category=KeyAttestPoPCriticalityWarning, stacklevel=2)
 
 
-def parse_key_attest_pop_extension_value(extn_value: bytes) -> KeyAttestPoPProof:
+def parse_key_attest_pop_extension_value(extn_value: bytes) -> KeyAttestPoP:
     """Decode the DER content of a KeyAttestPoP ``Extension.extnValue``.
 
     *extn_value* is the OCTET STRING payload — i.e., what
     :class:`cryptography.x509.UnrecognizedExtension.value` returns, or
     what ``pyasn1`` yields as the raw bytes of ``Extension.extnValue``.
     The bytes MUST be the DER of a
-    :class:`~libattest.formats.key_attest_pop.KeyAttestPoPProof` SEQUENCE.
+    :class:`~libattest.formats.key_attest_pop.KeyAttestPoP` SEQUENCE.
 
     :raises ValueError: when the bytes do not decode as a
-        ``KeyAttestPoPProof``.
+        ``KeyAttestPoP``.
     """
-    return decode_key_attest_pop_proof(extn_value)
+    return decode_key_attest_pop(extn_value)
 
 
 def validate_key_attest_pop_extension(
     critical: bool,
-    extn_value: Optional[Union[bytes, KeyAttestPoPProof]] = None,
+    extn_value: Optional[Union[bytes, KeyAttestPoP]] = None,
 ) -> bool:
     """Validate a KeyAttestPoP extension's metadata and (optionally) content.
 
@@ -283,8 +282,8 @@ def validate_key_attest_pop_extension(
     * Calls :func:`warn_if_key_attest_pop_critical` to surface a
       non-fatal warning when ``critical=True``.
     * If *extn_value* is bytes, attempts to decode it as a
-      ``KeyAttestPoPProof`` and returns ``False`` on failure.
-    * If *extn_value* is already a parsed ``KeyAttestPoPProof``, no
+      ``KeyAttestPoP`` and returns ``False`` on failure.
+    * If *extn_value* is already a parsed ``KeyAttestPoP``, no
       decode is attempted.
 
     :param critical: the X.509 ``critical`` flag of the extension.
@@ -295,7 +294,7 @@ def validate_key_attest_pop_extension(
     """
     warn_if_key_attest_pop_critical(critical)
 
-    if extn_value is None or isinstance(extn_value, KeyAttestPoPProof):
+    if extn_value is None or isinstance(extn_value, KeyAttestPoP):
         return True
 
     try:

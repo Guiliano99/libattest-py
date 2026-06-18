@@ -7,7 +7,7 @@
 These classes let test code compose a complete local attestation flow
 without any network connections or TPM hardware.
 
-Example
+Example:
 -------
 ::
 
@@ -33,7 +33,7 @@ Example
 
 from __future__ import annotations
 
-from libattest.types import AttestResult, EarStatus, VerifyResult
+from libattest.types import AttestResult, VerifyResult
 from libattest.verifier.base import AttestationVerifier
 
 
@@ -62,6 +62,7 @@ class InMemoryVerifier(AttestationVerifier):
         result: VerifyResult | None = None,
         reject_media_types: set[str] | None = None,
     ) -> None:
+        """Configure the fake verifier with fixed nonce and canned verification result."""
         self._nonce = nonce
         self._result = result if result is not None else VerifyResult.affirming()
         self._reject_media_types: set[str] = reject_media_types or set()
@@ -114,6 +115,7 @@ class EchoAttesterProvider:
         media_type: str = "application/octet-stream",
         bind_nonce: bool = True,
     ) -> None:
+        """Configure the fake provider with a fixed OID, evidence payload, and media type."""
         self.oid = oid
         self._evidence = evidence
         self._media_type = media_type
