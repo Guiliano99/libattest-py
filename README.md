@@ -9,7 +9,7 @@ The package provides:
 
 - CMP attestation freshness nonce request/response ASN.1 structures.
 - CSR attestation bundle structures (`AttestationBundle`, `AttestationStatement`).
-- TPM `TcgAttestCertify` and `TPMS_ATTEST` binary helpers.
+- TPM `TPMS_ATTEST` binary helpers (platform quote parsing).
 - `AttesterClient` — dispatch evidence generation to registered providers.
 - `AttestClient` — HTTP client for the full Veraison challenge-response flow.
 - `VerifierRouter` — in-memory verifier routing by hint, evidence type, or nonce.
@@ -35,7 +35,7 @@ from libattest.attester.client import AttesterClient
 from libattest.testing.fakes import EchoAttesterProvider, InMemoryVerifier
 from libattest.verifier.router import VerifierRouter
 
-oid = "2.23.133.20.1"
+oid = "1.3.6.1.4.1.99999.1.2"  # evidence-type OID (placeholder)
 
 # Verifier side: register one route by name and evidence-type OID.
 router = VerifierRouter()
@@ -107,9 +107,9 @@ Canonical immutable evidence result shared by `AttesterClient` and `AttestClient
 from libattest.types import AttestResult
 
 result = AttestResult(
-    oid="2.23.133.20.1",
+    oid="1.3.6.1.4.1.99999.1.2",        # evidence-type OID (placeholder)
     evidence=b"...",
-    media_type="application/vnd.tcg.attest-certify",
+    media_type="application/vnd.tcg.platform",
     cert_chain="/path/to/chain.pem",   # optional: propagated into bundle certs
 )
 ```
