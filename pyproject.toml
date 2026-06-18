@@ -18,8 +18,8 @@ dependencies = [
     "pyasn1-alt-modules>=0.4.10",
     "requests>=2.28.0",
     "cryptography>=48.0.0, < 49.0.0",
-    "keyutils_py @ git+https://github.com/Guiliano99/keyutils-py.git",
-    #"cwt>=3.2.0",
+    "keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git",  # KeyAttestPoP sign/verify
+    "tpm2-pytss>=2.3.0",  # mandatory: ESAPI access + TPMS_ATTEST parsing
 ]
 
 [project.optional-dependencies]
@@ -31,6 +31,15 @@ testing = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "httpx>=0.27.0",        # ASGI test client for FastAPI routes
+]
+dev = [
+    "safety>=3.7.0,<4.0.0",
+    "pylint>=4.0.4,<5.0.0",
+    "ruff>=0.15.12,<1.0.0",
+    "robotframework-robocop==8.2.11",
+    "pyright[nodejs]==1.1.410",
+    "codespell==2.4.2",
+    "reuse==6.2.0",
 ]
 
 [tool.setuptools]
