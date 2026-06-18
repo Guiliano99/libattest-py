@@ -25,13 +25,13 @@ def prepare_tcg_attest_certify(
     tpm_tpublic: bytes | None = None,
 ) -> TcgAttestCertify:
     """Build a populated `TcgAttestCertify` value."""
-
     value = TcgAttestCertify()
     value["tpmSAttest"] = tpm_s_attest
     value["signature"] = signature
     if tpm_tpublic is not None:
         value["tpmTPublic"] = tpm_tpublic
     return value
+
 
 __all__ = [
     "TcgAttestCertify",
