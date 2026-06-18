@@ -26,6 +26,7 @@ class TpmReferenceVerifier(AttestationVerifier):
         reference_handler: VerifierReferenceHandler,
         result_payload: str = "accepted",
     ) -> None:
+        """Store the reference handler and accepted verdict payload string."""
         self.reference_handler = reference_handler
         self.result_payload = result_payload
 
@@ -40,14 +41,9 @@ class TpmReferenceVerifier(AttestationVerifier):
         nonce: bytes | None = None,
     ) -> VerifyResult:
         """Verify TPM evidence with the configured reference handler."""
-
         if media_type != self.media_type:
-            logger.debug(
-                "Unsupported media type %r (expected %r)", media_type, self.media_type
-            )
-            return VerifyResult.unknown(
-                f"unsupported media type {media_type!r}; expected {self.media_type!r}"
-            )
+            logger.debug("Unsupported media type %r (expected %r)", media_type, self.media_type)
+            return VerifyResult.unknown(f"unsupported media type {media_type!r}; expected {self.media_type!r}")
 
         ref_result = self.reference_handler.handle_evidence(
             self._normalise_evidence(token_bytes),

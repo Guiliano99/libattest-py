@@ -31,3 +31,16 @@ class VerifierReferenceHandler(ABC):
     @abstractmethod
     def handle_evidence(self, evidence: Any, *, attester_id: str | None = None) -> ReferenceCheckResult:
         """Compare evidence from an Attester against local reference values."""
+
+
+class AcceptAllReferenceHandler(VerifierReferenceHandler):
+    """Reference handler that accepts any evidence unconditionally.
+
+    Useful for flows where the appraisal decision is driven entirely by other
+    inputs (for example explicit ``PcrReferenceValues`` or a proof-of-possession
+    check) and the reference-value comparison itself should not reject anything.
+    """
+
+    def handle_evidence(self, evidence: Any, *, attester_id: str | None = None) -> ReferenceCheckResult:
+        """Accept the evidence, echoing back the supplied ``attester_id``."""
+        return ReferenceCheckResult(accepted=True, attester_id=attester_id)

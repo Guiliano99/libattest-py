@@ -11,10 +11,7 @@ programmatically in test code.
 
 Example JSON file (set ``PCR_REFERENCE_VALUES_FILE`` env var to the path)::
 
-    {
-      "description": "Golden boot state — firmware v1.2, kernel 6.1",
-      "expected_pcr_digest_hex": "aabbcc..."
-    }
+    {"description": "Golden boot state — firmware v1.2, kernel 6.1", "expected_pcr_digest_hex": "aabbcc..."}
 
 Obtain ``expected_pcr_digest_hex`` by running a known-good attestation and
 capturing the quoted ``pcrDigest`` from the tpm-verifier log.
@@ -23,7 +20,7 @@ capturing the quoted ``pcrDigest`` from the tpm-verifier log.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -38,6 +35,7 @@ class PcrReferenceValues:
         directly against this value.
     description:
         Human-readable label for this reference set (logged on mismatch).
+
     """
 
     expected_pcr_digest_hex: str | None = None
@@ -49,10 +47,7 @@ def load_pcr_reference_values(path: str) -> PcrReferenceValues:
 
     Expected schema::
 
-        {
-          "description":            "string (optional)",
-          "expected_pcr_digest_hex": "hexstring"
-        }
+        {"description": "string (optional)", "expected_pcr_digest_hex": "hexstring"}
 
     Parameters
     ----------
@@ -69,6 +64,7 @@ def load_pcr_reference_values(path: str) -> PcrReferenceValues:
         If the file cannot be opened.
     ValueError
         If the JSON is malformed or contains invalid hex.
+
     """
     with open(path) as fh:
         data = json.load(fh)
@@ -78,9 +74,7 @@ def load_pcr_reference_values(path: str) -> PcrReferenceValues:
         try:
             bytes.fromhex(hex_val)
         except ValueError as exc:
-            raise ValueError(
-                f"expected_pcr_digest_hex in {path!r} is not valid hex: {exc}"
-            ) from exc
+            raise ValueError(f"expected_pcr_digest_hex in {path!r} is not valid hex: {exc}") from exc
     return PcrReferenceValues(
         expected_pcr_digest_hex=hex_val,
         description=data.get("description", ""),
@@ -97,8 +91,8 @@ def verify_pcr_quote(
     Parameters
     ----------
     pcr_selections:
-        PCR selection list returned by
-        :func:`~libattest.formats.tpm.tpms_attest.extract_quote_info`.
+        PCR selection list from a parsed
+        :class:`~libattest.formats.tpm.tpms_attest.ParsedAttest`.
         Used only for diagnostic logging; the comparison is on ``pcr_digest``.
     pcr_digest:
         Raw bytes of ``TPMS_QUOTE_INFO.pcrDigest`` (from TPM2B_DIGEST).
@@ -110,6 +104,7 @@ def verify_pcr_quote(
     tuple[bool, str]
         ``(True, reason)`` when the digest matches the reference,
         ``(False, reason)`` otherwise.
+
     """
     if reference.expected_pcr_digest_hex is None:
         return False, "no reference PCR digest configured in PcrReferenceValues"
@@ -123,7 +118,7 @@ def verify_pcr_quote(
         )
     return (
         False,
-        f"pcrDigest mismatch"
+        "pcrDigest mismatch"
         + (f" ({reference.description})" if reference.description else "")
         + f": expected={expected.hex()} got={pcr_digest.hex()}",
     )
