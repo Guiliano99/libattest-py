@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for the protocol-agnostic Remote Attestation engine.
+
+These exercise the engine end-to-end (issue → verify_bundle) and the nonce
+lifecycle (issue / consume / expiry / replay) using the in-memory verifier fake
+and a ``jwt_profile`` — no TPM imports, no network.
+"""
+
+from __future__ import annotations
+
+import pytest
+from pyasn1.codec.der import encoder as der_encoder
+
+from libattest.formats.csrattest import (
+    prepare_attestation_bundle,
+    prepare_opaque_attestation_statement,
+)
+from libattest.ra import (
+    NonceStore,
+    ProfileRegistry,
+    RemoteAttestationEngine,
+    ReplayError,
+    jwt_profile,
+)
+from libattest.testing.fakes import InMemoryVerifier
+from libattest.types import EarStatus, VerifyResult
+
+OID = "1.3.6.1.4.1.99999.1"
+TX = b"\x01" * 16
+
+
+def _bundle(oid: str = OID, payload: bytes = b"jwt.evidence.sig", count: int = 1) -> bytes:
+    """DER of a bundle with *count* opaque (JWT-style) statements under *oid*."""
+    statements = [prepare_opaque_attestation_statement(oid, payload) for _ in range(count)]
+    return bytes(der_encoder.encode(prepare_attestation_bundle(statements)))
+
+
+def _engine(verifier) -> RemoteAttestationEngine:
+    """Engine with a single jwt_profile bound to *verifier* for ``OID``."""
+    profiles = ProfileRegistry()
+    profiles.register(jwt_profile(request_type_oid=OID, statement_oid=OID, verifier=verifier))
+    return RemoteAttestationEngine(profiles)
+
+
+# ── happy path ─────────────────────────────────────────────────────────────────
+
+
+def test_issue_then_verify_bundle_affirming():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear.jwt.token"))
+    engine = _engine(verifier)
+
+    state = engine.issue_nonce(TX, OID)
+    assert state.nonce  # a real nonce was generated
+    assert state.statement_oid == OID
+
+    outcome = engine.verify_bundle(_bundle(), TX)
+
+    assert outcome.accepted
+    assert outcome.result.per_statement[0].status == EarStatus.affirming
+    assert outcome.first_ear == "ear.jwt.token"
+    assert outcome.result.routes == (OID,)
+    # The verifier saw the engine-issued nonce.
+    assert verifier.verify_calls[0][2] == state.nonce
+
+
+def test_verify_bundle_multi_statement_per_oid_instances():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
+    engine = _engine(verifier)
+
+    # Two nonces for the same OID → instance 0 and 1.
+    s0 = engine.issue_nonce(TX, OID)
+    s1 = engine.issue_nonce(TX, OID)
+    assert (s0.instance, s1.instance) == (0, 1)
+
+    outcome = engine.verify_bundle(_bundle(count=2), TX)
+    assert outcome.accepted
+    assert len(outcome.result.per_statement) == 2
+    consumed_nonces = {call[2] for call in verifier.verify_calls}
+    assert consumed_nonces == {s0.nonce, s1.nonce}
+
+
+# ── contraindicated path ────────────────────────────────────────────────────────
+
+
+def test_verify_bundle_contraindicated_when_verifier_rejects():
+    verifier = InMemoryVerifier(result=VerifyResult.contraindicated("bad evidence"))
+    engine = _engine(verifier)
+
+    engine.issue_nonce(TX, OID)
+    outcome = engine.verify_bundle(_bundle(), TX)
+
+    assert not outcome.accepted
+    failure = outcome.first_failure
+    assert failure is not None
+    assert failure.status == EarStatus.contraindicated
+    assert outcome.first_ear is None
+
+
+def test_verify_bundle_unknown_when_no_nonce_issued():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
+    engine = _engine(verifier)
+
+    # No issue_nonce → consume must fail → unknown verdict, verifier untouched.
+    outcome = engine.verify_bundle(_bundle(), TX)
+
+    assert not outcome.accepted
+    assert outcome.result.per_statement[0].status == EarStatus.unknown
+    assert verifier.verify_calls == []
+
+
+def test_verify_bundle_unknown_for_unregistered_statement_oid():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
+    engine = _engine(verifier)
+
+    other = "1.3.6.1.4.1.99999.2"
+    # Issue under the unknown OID so the nonce consume succeeds, then the
+    # missing profile yields 'unknown' (not a nonce error).
+    engine.nonce_store.issue(TX, other)
+    outcome = engine.verify_bundle(_bundle(oid=other), TX)
+
+    assert outcome.result.per_statement[0].status == EarStatus.unknown
+    assert verifier.verify_calls == []
+
+
+def test_bundle_decode_failure_is_unknown():
+    engine = _engine(InMemoryVerifier())
+    outcome = engine.verify_bundle(b"\x00\x01not-der", TX)
+    assert outcome.result.per_statement[0].status == EarStatus.unknown
+
+
+# ── nonce lifecycle ─────────────────────────────────────────────────────────────
+
+
+def test_nonce_store_issue_consume_one_shot():
+    store = NonceStore()
+    state = store.issue(TX, OID)
+    got = store.consume(TX, OID, 0)
+    assert got.nonce == state.nonce
+    assert got.consumed
+    # Second consume of the same slot → replay.
+    with pytest.raises(ReplayError):
+        store.consume(TX, OID, 0)
+
+
+def test_nonce_store_unknown_slot_raises_keyerror():
+    store = NonceStore()
+    store.issue(TX, OID)
+    with pytest.raises(KeyError):
+        store.consume(TX, OID, 5)
+    with pytest.raises(KeyError):
+        store.consume(b"\x09" * 16, OID, 0)
+
+
+def test_nonce_store_expiry():
+    store = NonceStore(ttl_seconds=0)  # immediate expiry
+    store.issue(TX, OID)
+    # An expired nonce cannot be consumed.  The TTL=0 transaction is evicted
+    # whole at consume time (KeyError), while a slot that outlives its tx window
+    # raises ValueError; either signals "expired, not consumable".
+    with pytest.raises((ValueError, KeyError)):
+        store.consume(TX, OID, 0)
+
+
+def test_nonce_store_drop_transaction():
+    store = NonceStore()
+    store.issue(TX, OID)
+    assert store.stats()["total_nonces"] == 1
+    store.drop_transaction(TX)
+    assert store.stats()["total_nonces"] == 0
+    with pytest.raises(KeyError):
+        store.consume(TX, OID, 0)
+
+
+def test_engine_drops_transaction_after_verify():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
+    engine = _engine(verifier)
+    engine.issue_nonce(TX, OID)
+    engine.verify_bundle(_bundle(), TX)
+    # The per-tx state was dropped → a replayed bundle finds no nonce.
+    assert engine.nonce_store.stats()["total_nonces"] == 0
+
+
+def test_engine_replay_bundle_after_consume_is_unknown():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
+    engine = _engine(verifier)
+    engine.issue_nonce(TX, OID)
+    first = engine.verify_bundle(_bundle(), TX, drop_transaction=False)
+    assert first.accepted
+    # Replaying the same bundle without re-issuing → nonce already consumed.
+    second = engine.verify_bundle(_bundle(), TX)
+    assert not second.accepted
+    assert second.result.per_statement[0].status == EarStatus.unknown
