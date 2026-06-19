@@ -6,7 +6,9 @@
 
 from libattest.formats.csrattest.attest_nonce_freshness_structures import (
     NonceRequest,
+    NonceRequestASN1,
     NonceResponse,
+    NonceResponseASN1,
     id_it_nonceRequest,
     id_it_nonceResponse,
 )
@@ -39,7 +41,9 @@ __all__ = [
     "AttestationStatement",
     "LimitedCertChoices",
     "NonceRequest",
+    "NonceRequestASN1",
     "NonceResponse",
+    "NonceResponseASN1",
     "OtherCertificateFormat",
     "decode_attestation_bundle",
     "decode_attestation_statement",

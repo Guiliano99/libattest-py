@@ -117,10 +117,20 @@ class NonceResponse(univ.Sequence):
     )
 
 
+# Backward-compatible ``*ASN1`` aliases.  The TPMDemo libattest exported these
+# pyasn1 structures under an ``ASN1`` suffix; downstream code (the cmp-test-suite
+# MockCA's compatibility wrappers) still imports the suffixed names.  Keep the
+# aliases so the base switch (TPMDemo → Updatev7) does not break those imports.
+NonceRequestASN1 = NonceRequest
+NonceResponseASN1 = NonceResponse
+
+
 __all__ = [
     "NonceLengthConstraint",
     "NonceRequest",
+    "NonceRequestASN1",
     "NonceResponse",
+    "NonceResponseASN1",
     "NonceValueSizeConstraint",
     "id_it_nonceRequest",
     "id_it_nonceResponse",
