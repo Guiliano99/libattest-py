@@ -59,11 +59,14 @@ wording in the draft.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import warnings
 from typing import Optional, Union
 
 from pyasn1.codec.der import decoder as _der_decoder
+from pyasn1.codec.der import encoder as _der_encoder
 from pyasn1.type import char, namedtype, univ
 
 from libattest.formats.key_attest_pop.structures import (
@@ -203,6 +206,86 @@ def validate_cmw_extension(
         logger.warning("CMW content decode failed: %s", exc)
         return False
     return True
+
+
+# ── EAR extension encoding (CMW vs raw JWT) ──────────────────────────────────
+
+
+def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
+    """Return the DER extnValue content for an ``id-pe-cmw`` EAR extension.
+
+    Builds a CMW (Conceptual Message Wrapper) JSON *record*
+    ``[media-type, base64url-nopad(message)]`` (draft-ietf-rats-msg-wrap-23 §3)
+    and carries it in the CMW ``json`` (UTF8String) alternative (§4.4).  The
+    value field is base64url-encoded without padding even though a JWT is
+    already textual, exactly as the draft requires.
+
+    The returned bytes are the DER of the :class:`CMW` CHOICE, ready to be
+    placed verbatim into an X.509 ``Extension.extnValue`` OCTET STRING.
+    """
+    value_b64 = (
+        base64.urlsafe_b64encode(ear_jwt.encode("utf-8")).decode("ascii").rstrip("=")
+    )
+    record = json.dumps(["application/eat+jwt", value_b64], separators=(",", ":"))
+    cmw = CMW()
+    cmw.setComponentByName("json", char.UTF8String(record))
+    return _der_encoder.encode(cmw)
+
+
+def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
+    """Encode an EAR JWT into an X.509 extension ``(oid, extn_value_der)`` pair.
+
+    Selects the extension value encoding from *oid*:
+
+    * ``oid == id-pe-cmw`` (``1.3.6.1.5.5.7.1.35``) → the value is a CMW JSON
+      record wrapping the EAR JWT (draft-ietf-rats-msg-wrap-23 §4.4), produced by
+      :func:`wrap_ear_in_cmw_json`.
+    * any other *oid* (e.g. a demo/private OID) → the value is the raw EAR JWT
+      bytes (``ear_jwt.encode("utf-8")``), placed verbatim.
+
+    Parameters
+    ----------
+    ear_jwt:
+        The compact-serialised EAR JWT string.
+    oid:
+        The dot-form OID under which the extension will be embedded.
+
+    Returns
+    -------
+    tuple[str, bytes]
+        ``(oid, extn_value_der)`` — the *oid* echoed back (so callers can use
+        this as the single source of the extension OID) and the DER-encoded
+        extension value content.
+
+    """
+    if oid == ID_PE_CMW_DOTTED:
+        return oid, wrap_ear_in_cmw_json(ear_jwt)
+    return oid, ear_jwt.encode("utf-8")
+
+
+def unwrap_context_tag(der: bytes) -> bytes:
+    """Strip one outer context-specific tag from *der*, if present.
+
+    pyasn1 components extracted from a tagged CHOICE (e.g.
+    ``CertOrEncCert.certificate``) re-encode with the context tag attached.
+    For an EXPLICIT tag the inner TLV is returned verbatim; for an IMPLICIT
+    tag the outer tag byte is rewritten to SEQUENCE (``0x30``).
+
+    This is a pure byte-level helper (no ASN.1 decode) so callers that only
+    need a plain ``Certificate`` TLV out of a CHOICE re-encoding can reuse it.
+    """
+    if not der or der[0] == 0x30:
+        return der
+    # Skip the outer tag + length octets.
+    idx = 1
+    first_len = der[idx]
+    idx += 1
+    if first_len & 0x80:
+        idx += first_len & 0x7F
+    inner = der[idx:]
+    if inner and inner[0] == 0x30:
+        return inner  # EXPLICIT tag: inner TLV is the full SEQUENCE
+    return b"\x30" + der[1:]  # IMPLICIT tag: retag as SEQUENCE
 
 
 # ── KeyAttestPoP extension (SPEC §DR-1, §DR-8) ──────────────────────────────

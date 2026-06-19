@@ -111,10 +111,25 @@ def prepare_opaque_attestation_statement(
     """Build a statement for a non-ASN.1 payload such as a JWT.
 
     The payload is DER-wrapped as an OCTET STRING because ``stmt`` is an ASN.1
-    open type.
+    open type.  Use :func:`prepare_asn1_attestation_statement` when the
+    evidence is already a DER-encoded ASN.1 structure.
     """
     wrapped_payload = encoder.encode(univ.OctetString(payload))
     return prepare_attestation_statement(stmt_id, wrapped_payload)
+
+
+def prepare_asn1_attestation_statement(
+    stmt_id: univ.ObjectIdentifier,
+    der_payload: bytes,
+) -> AttestationStatement:
+    """Build a statement for evidence that is already a DER-encoded ASN.1 value.
+
+    Unlike :func:`prepare_opaque_attestation_statement`, the DER bytes are
+    embedded directly as an open-type ``Any`` without an additional OCTET STRING
+    wrapper.  Use this when the evidence is a SEQUENCE such as
+    ``TcgAttestCertify``.
+    """
+    return prepare_attestation_statement(stmt_id, der_payload)
 
 
 def _as_limited_cert_choice(cert: CertificateInput) -> LimitedCertChoices:
@@ -147,15 +162,20 @@ def prepare_multi_statement_bundle(
     """Build an `AttestationBundle` from multiple :class:`AttestResult`-like values.
 
     For each result, the OID is taken from ``.oid`` and the evidence from
-    ``.evidence_bytes()``.  Each statement is wrapped as an opaque OCTET STRING
-    via :func:`prepare_opaque_attestation_statement` — matching the existing
-    single-result helper.
+    ``.evidence_bytes()``.  Statements are wrapped according to the result's
+    ``is_asn1_evidence`` flag (when present):
+
+    * ``is_asn1_evidence=True``  → :func:`prepare_asn1_attestation_statement`
+    * ``is_asn1_evidence=False`` → :func:`prepare_opaque_attestation_statement`
+
+    Results without that flag default to opaque (OCTET STRING) wrapping —
+    matching the existing single-result helper.
 
     Parameters
     ----------
     results:
         Iterable of ``AttestResult`` instances (or objects with the same
-        ``oid`` / ``evidence_bytes()`` shape).
+        ``oid`` / ``evidence_bytes()`` / ``is_asn1_evidence`` shape).
     certs:
         Optional certificate chain shared by all statements (e.g. AK chain).
 
@@ -164,7 +184,10 @@ def prepare_multi_statement_bundle(
     for result in results:
         oid = univ.ObjectIdentifier(result.oid)
         evidence = result.evidence_bytes()
-        statements.append(prepare_opaque_attestation_statement(oid, evidence))
+        if getattr(result, "is_asn1_evidence", False):
+            statements.append(prepare_asn1_attestation_statement(oid, evidence))
+        else:
+            statements.append(prepare_opaque_attestation_statement(oid, evidence))
     return prepare_attestation_bundle(statements, certs=certs)
 
 
@@ -241,3 +264,100 @@ def get_attestation_bundle_certs(attestation_bundle: AttestationBundle) -> list[
             raise NotImplementedError("Only X.509 certificate entries are supported.")
         certs.append(entry["certificate"])
     return certs
+
+
+def decode_attestation_bundle(der: bytes | bytearray | univ.Any) -> AttestationBundle:
+    """Decode DER into an :class:`AttestationBundle`.
+
+    The single public entry point for parsing an attestation bundle so callers
+    (MockCA, verifier) reuse the library codec instead of importing the pyasn1
+    spec and calling ``der_decoder`` themselves.
+
+    Raises
+    ------
+    ValueError
+        On malformed DER or trailing bytes after the value.
+
+    """
+    data = bytes(der)
+    try:
+        bundle, rest = der_decoder.decode(data, asn1Spec=AttestationBundle())
+    except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
+        raise ValueError(f"AttestationBundle: cannot decode DER: {exc}") from exc
+    if rest:
+        raise ValueError("AttestationBundle: trailing bytes after DER value")
+    return bundle
+
+
+def decode_attestation_statement(der: bytes | bytearray | univ.Any) -> AttestationStatement:
+    """Decode DER into a single :class:`AttestationStatement`.
+
+    Raises
+    ------
+    ValueError
+        On malformed DER or trailing bytes after the value.
+
+    """
+    data = bytes(der)
+    try:
+        statement, rest = der_decoder.decode(data, asn1Spec=AttestationStatement())
+    except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
+        raise ValueError(f"AttestationStatement: cannot decode DER: {exc}") from exc
+    if rest:
+        raise ValueError("AttestationStatement: trailing bytes after DER value")
+    return statement
+
+
+def encode_oid_der(oid: str | univ.ObjectIdentifier) -> bytes:
+    """DER-encode an OBJECT IDENTIFIER from a dot-form string or pyasn1 OID.
+
+    Both the GenM side (which stores a nonce under the evidence-statement OID)
+    and the IR side (which keys the same nonce by the ``AttestationStatement.type``
+    OID) must produce byte-identical OID DER.  Routing both through this helper
+    guarantees that without either MockCA handler importing ``pyasn1`` directly.
+    """
+    obj = oid if isinstance(oid, univ.ObjectIdentifier) else univ.ObjectIdentifier(oid)
+    return bytes(encoder.encode(obj))
+
+
+def unwrap_attestation_statement(stmt_raw: bytes) -> tuple[bytes, bool]:
+    """Unwrap the ``AttestationStatement.stmt`` open-type payload.
+
+    The ``stmt`` field is an ASN.1 open type (``Any``) whose DER bytes carry one
+    of two shapes the MockCA / verifier must distinguish without per-format
+    branching in the core:
+
+    * **OCTET STRING (tag ``0x04``)** — an opaque payload (e.g. a JWT) wrapped by
+      :func:`prepare_opaque_attestation_statement`.  The inner bytes are returned
+      with ``is_wrapped=True``.
+    * **anything else (e.g. a SEQUENCE, tag ``0x30``)** — a DER-encoded ASN.1
+      structure (e.g. ``TcgAttestCertify``) embedded directly by
+      :func:`prepare_asn1_attestation_statement`.  The bytes are returned
+      verbatim with ``is_wrapped=False``.
+
+    Parameters
+    ----------
+    stmt_raw:
+        The raw DER bytes of the ``stmt`` open type.
+
+    Returns
+    -------
+    tuple[bytes, bool]
+        ``(inner_bytes, is_wrapped)`` — the unwrapped statement substrate and a
+        flag indicating whether an OCTET STRING wrapper was stripped.
+
+    Raises
+    ------
+    ValueError
+        When *stmt_raw* claims an OCTET STRING wrapper but does not decode as one.
+
+    """
+    if stmt_raw[:1] == b"\x04":
+        try:
+            inner, _rest = der_decoder.decode(stmt_raw, asn1Spec=univ.OctetString())
+        except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
+            raise ValueError(
+                f"AttestationStatement.stmt: cannot decode OCTET STRING: {exc}"
+            ) from exc
+        return bytes(inner), True
+    return stmt_raw, False

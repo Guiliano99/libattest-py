@@ -153,6 +153,18 @@ def attestation_params_response_info(
     return univ.Any(hexValue=encode_tpm_attestation_params(pcrs, hash_alg_id).hex())
 
 
+def make_pcr_selection_resp_info(
+    pcrs: Iterable[int] | None = None,
+    hash_alg_id: int | None = None,
+) -> univ.Any:
+    """Compatibility name for TPM platform PCR-selection ``respInfo``.
+
+    The value is DER(TpmAttestationParams), matching the OpenSSL/gencmpclient
+    TPM platform-attestation profile.
+    """
+    return attestation_params_response_info(pcrs, hash_alg_id)
+
+
 def attestation_params_from_response_info(
     response_info: bytes | bytearray | univ.Any | None,
 ) -> tuple[list[int] | None, int | None] | None:
@@ -169,4 +181,5 @@ __all__ = [
     "attestation_params_response_info",
     "decode_tpm_attestation_params",
     "encode_tpm_attestation_params",
+    "make_pcr_selection_resp_info",
 ]

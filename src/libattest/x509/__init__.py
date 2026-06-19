@@ -23,14 +23,17 @@ from libattest.x509.extensions import (
     ID_PE_CMW_DOTTED,
     CMWCriticalityWarning,
     KeyAttestPoPCriticalityWarning,
+    encode_ear_extension,
     get_key_attest_pop_oid,
     get_key_attest_pop_oid_dotted,
     parse_cmw_extension_value,
     parse_key_attest_pop_extension_value,
+    unwrap_context_tag,
     validate_cmw_extension,
     validate_key_attest_pop_extension,
     warn_if_cmw_critical,
     warn_if_key_attest_pop_critical,
+    wrap_ear_in_cmw_json,
 )
 
 __all__ = [
@@ -41,12 +44,15 @@ __all__ = [
     "ID_PE_CMW",
     "ID_PE_CMW_DOTTED",
     "KeyAttestPoPCriticalityWarning",
+    "encode_ear_extension",
     "get_key_attest_pop_oid",
     "get_key_attest_pop_oid_dotted",
     "parse_cmw_extension_value",
     "parse_key_attest_pop_extension_value",
+    "unwrap_context_tag",
     "validate_cmw_extension",
     "validate_key_attest_pop_extension",
     "warn_if_cmw_critical",
     "warn_if_key_attest_pop_critical",
+    "wrap_ear_in_cmw_json",
 ]

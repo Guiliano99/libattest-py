@@ -4,9 +4,11 @@
 
 """TCG TPM attestation structures."""
 
+from pyasn1.codec.der import decoder as der_decoder
 from pyasn1.type import namedtype, univ
 
 id_tcg_attest_certify = univ.ObjectIdentifier("2.23.133.20.1")
+id_tcg_attest_quote = univ.ObjectIdentifier("2.23.133.20.2")
 
 
 class TcgAttestCertify(univ.Sequence):
@@ -33,8 +35,34 @@ def prepare_tcg_attest_certify(
     return value
 
 
+def decode_tcg_attest_certify(der: bytes | bytearray | univ.Any) -> TcgAttestCertify:
+    """Decode DER into :class:`TcgAttestCertify`.
+
+    The same positional SEQUENCE serves both ``TcgAttestCertify`` (key
+    attestation, OID 2.23.133.20.1) and ``TcgAttestQuote`` (platform
+    attestation, OID 2.23.133.20.2): both are
+    ``SEQUENCE { tpmSAttest, signature, <opt 3rd field> }`` on the wire.
+
+    Raises
+    ------
+    ValueError
+        On malformed DER or trailing bytes after the value.
+
+    """
+    data = bytes(der)
+    try:
+        value, rest = der_decoder.decode(data, asn1Spec=TcgAttestCertify())
+    except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
+        raise ValueError(f"TcgAttestCertify: cannot decode DER: {exc}") from exc
+    if rest:
+        raise ValueError("TcgAttestCertify: trailing bytes after DER value")
+    return value
+
+
 __all__ = [
     "TcgAttestCertify",
+    "decode_tcg_attest_certify",
     "id_tcg_attest_certify",
+    "id_tcg_attest_quote",
     "prepare_tcg_attest_certify",
 ]

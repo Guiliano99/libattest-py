@@ -10,6 +10,7 @@ from libattest.formats.tpm.attestation_params import (
     attestation_params_response_info,
     decode_tpm_attestation_params,
     encode_tpm_attestation_params,
+    make_pcr_selection_resp_info,
 )
 from libattest.formats.tpm.pcr_selection import (
     TPM_PCR_SELECTION_OID_DEFAULT,
@@ -23,6 +24,13 @@ from libattest.formats.tpm.pcr_selection import (
     pcr_selection_response_info,
     resolve_tpm_pcr_selection_oid,
     tpm_pcr_selection_json_value,
+)
+from libattest.formats.tpm.tcg import (
+    TcgAttestCertify,
+    decode_tcg_attest_certify,
+    id_tcg_attest_certify,
+    id_tcg_attest_quote,
+    prepare_tcg_attest_certify,
 )
 from libattest.formats.tpm.tpms_attest import (
     TPM_ALG_ECDSA,
@@ -53,6 +61,7 @@ __all__ = [
     "TPM_PCR_SELECTION_OID_DEFAULT",
     "TPM_PCR_SELECTION_OID_ENV",
     "TPM_ST_ATTEST_QUOTE",
+    "TcgAttestCertify",
     "TpmAttestationParamsASN1",
     "TpmPcrSelectionInfoASN1",
     "TpmQuoteSignatureEvidence",
@@ -60,17 +69,22 @@ __all__ = [
     "attestation_params_request_info",
     "attestation_params_response_info",
     "build_tpm_pcr_selection_json",
+    "decode_tcg_attest_certify",
     "decode_tpm_attestation_params",
     "decode_tpm_pcr_selection_info",
     "encode_tpm_attestation_params",
     "encode_tpm_pcr_selection_info",
     "encode_tpm_pcr_selection_info_from_parts",
+    "id_tcg_attest_certify",
+    "id_tcg_attest_quote",
+    "make_pcr_selection_resp_info",
     "ParsedAttest",
     "parse_tpms_attest",
     "pcr_indices_to_mask",
     "pcr_mask_to_indices",
     "pcr_selection_from_response_info",
     "pcr_selection_response_info",
+    "prepare_tcg_attest_certify",
     "resolve_tpm_pcr_selection_oid",
     "tpm_pcr_selection_json_value",
 ]
