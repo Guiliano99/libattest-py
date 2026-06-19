@@ -264,7 +264,7 @@ class RemoteAttestationEngine:
                 continue
 
             # 3. Submit to the verifier.
-            verdict = self._submit(profile, nonce_state, stmt_oid, stmt_bytes)
+            verdict = self._submit(profile, nonce_state, stmt_oid, stmt_bytes, bundle_der)
 
             # 4. Optional reference-value check.
             if verdict.status == EarStatus.affirming and profile.reference_handler is not None:
@@ -294,12 +294,15 @@ class RemoteAttestationEngine:
         nonce_state: NonceState,
         stmt_oid: str,
         stmt_bytes: bytes,
+        bundle_der: bytes,
     ) -> VerifyResult:
         """Submit one statement to its profile's verifier and return the verdict.
 
         The default HTTP client (:class:`VeraisonVerifierClient`) is given the
-        richer ``(evidence_oid, resp_info_json)`` context; any other
-        :class:`AttestationVerifier` is driven through the ABC ``verify_token``.
+        FULL ``AttestationBundle`` DER (the verifier decodes the bundle, selects
+        the statement by ``evidence_oid`` and extracts the AK cert chain) plus
+        the ``resp_info_json`` context; any other :class:`AttestationVerifier` is
+        driven through the ABC ``verify_token`` with the unwrapped statement.
         """
         verifier: AttestationVerifier = profile.resolve_verifier()
         media_type = getattr(verifier, "media_type", "application/octet-stream")
@@ -308,7 +311,7 @@ class RemoteAttestationEngine:
             resp_info_json = self._resp_info_json(profile, nonce_state.resp_info)
             ear_jwt = verifier.submit_evidence(
                 nonce=nonce_state.nonce,
-                evidence=stmt_bytes,
+                evidence=bundle_der,
                 evidence_oid=stmt_oid,
                 resp_info_json=resp_info_json,
             )

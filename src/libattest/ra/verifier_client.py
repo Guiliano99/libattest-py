@@ -68,8 +68,10 @@ class VeraisonVerifierClient(AttestationVerifier):
         Path of the EAR signing-key endpoint.  Defaults to
         :data:`DEFAULT_EAR_KEY_PATH`.
     tls_verify:
-        Whether to verify HTTPS certificates.  Defaults to ``False`` to match
-        the demo's plain-HTTP intra-compose traffic.
+        Whether to verify HTTPS certificates.  Defaults to ``True`` (secure by
+        default for reuse).  The demo's plain-HTTP intra-compose traffic ignores
+        it (``verify`` is moot for non-TLS URLs); callers using ``https://`` with
+        a self-signed verifier must opt out explicitly (``tls_verify=False``).
     fetch_timeout:
         Per-request timeout in seconds.
     media_type:
@@ -83,7 +85,7 @@ class VeraisonVerifierClient(AttestationVerifier):
         *,
         submit_path: str = DEFAULT_SUBMIT_PATH,
         ear_key_path: str = DEFAULT_EAR_KEY_PATH,
-        tls_verify: bool = False,
+        tls_verify: bool = True,
         fetch_timeout: int = 10,
         media_type: str = "application/octet-stream",
     ) -> None:
