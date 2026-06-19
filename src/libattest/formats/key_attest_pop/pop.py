@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Union
 
-import keyutils_py
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -67,6 +66,8 @@ def compute_key_attest_pop(
     seed: bytes,
 ) -> KeyAttestPoP:
     """Sign ``seed`` and return a ``KeyAttestPoP`` value."""
+    import keyutils_py  # lazy: the native dep is only needed at call time
+
     key = _load_private_key(private_key)
     if isinstance(key, rsa.RSAPrivateKey):
         algorithm = build_sha256_rsa_algorithm()
@@ -85,6 +86,8 @@ def verify_key_attest_pop(
     pop: KeyAttestPoP,
 ) -> bool:
     """Verify a ``KeyAttestPoP`` signature with the CSR/CertTemplate SPKI."""
+    import keyutils_py  # lazy: the native dep is only needed at call time
+
     try:
         public_key = serialization.load_der_public_key(spki_der)
         algorithm_oid = key_attest_pop_algorithm_oid(pop)
