@@ -27,7 +27,7 @@ jobs:
     outputs:
       cache-key: ${{ steps.key.outputs.key }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6
@@ -49,7 +49,7 @@ jobs:
 
       - name: Cache virtualenv
         id: cache-venv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ steps.key.outputs.key }}
@@ -71,12 +71,12 @@ jobs:
     needs: setup_env
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
@@ -87,12 +87,12 @@ jobs:
     needs: setup_env
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
@@ -103,12 +103,12 @@ jobs:
     needs: setup_env
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
@@ -122,12 +122,12 @@ jobs:
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
@@ -146,7 +146,7 @@ jobs:
   version_check:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Ensure version is referenced in CHANGELOG.md
         run: |
           VERSION=$(awk -F'"' '/^version = / {print $2; exit}' pyproject.toml)
@@ -164,12 +164,12 @@ jobs:
     needs: [setup_env, ruff_lint, license_check, spelling_check]
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
@@ -182,12 +182,12 @@ jobs:
     env:
       OQS_INSTALL_PATH: "/root/_oqs"   # keep if needed
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
@@ -199,12 +199,12 @@ jobs:
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Restore virtualenv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.VENV_DIR }}
           key: ${{ needs.setup_env.outputs.cache-key }}
