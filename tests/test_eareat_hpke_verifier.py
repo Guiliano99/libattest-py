@@ -83,6 +83,23 @@ def test_positive_affirming_and_ear_verifies() -> None:
     assert claims["eat_nonce"] == jose_jws.b64u_encode(NONCE)
 
 
+def test_issue_ear_contraindicated_keeps_veraison_wire_format() -> None:
+    # The EAR is now built via a validated EARToken, but must still emit the Veraison
+    # claims-set (dotted keys, veraison profile, 99 trust vector) the consumers expect.
+    attester = ec.generate_private_key(ec.SECP256R1())
+    verifier = _make_verifier(attester)
+    claims = jose_jws.verify_es256(
+        verifier.issue_ear(NONCE, "contraindicated"), verifier.ear_verification_pem()
+    )
+    assert claims["eat_profile"] == "tag:github.com,2023:veraison/ear"
+    assert claims["ear.verifier-id"] == {"build": "N/A", "developer": "eareat-hpke-verifier"}
+    assert claims["eat_nonce"] == jose_jws.b64u_encode(NONCE)
+    submod = claims["submods"]["ATG_PLUGIN"]
+    assert submod["ear.status"] == "contraindicated"
+    assert submod["ear.appraisal-policy-id"] == "policy:ATG_PLUGIN"
+    assert set(submod["ear.trustworthiness-vector"].values()) == {99}
+
+
 def test_cmw_stmt_is_utf8string() -> None:
     attester = ec.generate_private_key(ec.SECP256R1())
     verifier = _make_verifier(attester)

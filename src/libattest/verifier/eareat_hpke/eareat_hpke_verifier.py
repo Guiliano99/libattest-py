@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from libattest.ear import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
 from libattest.formats import eareat_hpke as evidence
 from libattest.formats import jose_hpke, jose_jws
 from libattest.media_types import EAT_JWT, base_media_type
@@ -50,6 +52,33 @@ _TRUST_VECTOR_KEYS = (
     "storage-opaque",
     "sourced-data",
 )
+
+
+def _ear_token_to_veraison_claims(token: EARToken) -> dict[str, Any]:
+    """Re-key a draft-04 EARToken into this verifier's Veraison EAR claims-set (dotted keys).
+
+    The EARToken is used only as a validated, self-documenting intermediate; the wire format
+    stays the Veraison one (``ear.status`` etc.) that ``libattest.ear.parse_ear_verdict`` and the
+    ``VeraisonVerifierClient`` consume.
+    """
+    submods: dict[str, Any] = {}
+    for name, appr in token.submods.items():
+        submod: dict[str, Any] = {
+            "ear.status": appr.status.value,
+            "ear.trustworthiness-vector": appr.trustworthiness_vector,
+        }
+        if appr.appraisal_policy_ids:
+            submod["ear.appraisal-policy-id"] = appr.appraisal_policy_ids[0]  # we set exactly one
+        submods[name] = submod
+    claims: dict[str, Any] = {
+        "eat_profile": token.eat_profile,
+        "iat": token.iat,
+        "ear.verifier-id": token.verifier_id,
+        "submods": submods,
+    }
+    if token.nonce is not None:
+        claims["eat_nonce"] = token.nonce.as_b64_str()  # round-trips to the input base64url string
+    return claims
 
 
 class EarEatHpkeVerifier(AttestationVerifier):
@@ -190,20 +219,22 @@ class EarEatHpkeVerifier(AttestationVerifier):
             if status == "affirming"
             else {key: 99 for key in _TRUST_VECTOR_KEYS}
         )
-        payload = {
-            "eat_profile": _EAT_PROFILE,
-            "iat": int(time.time()),
-            "eat_nonce": nonce_b64url,
-            "ear.verifier-id": {"build": "N/A", "developer": "eareat-hpke-verifier"},
-            "submods": {
-                self._scheme_name: {
-                    "ear.status": status,
-                    "ear.appraisal-policy-id": f"policy:{self._scheme_name}",
-                    "ear.trustworthiness-vector": trust_vector,
-                }
+        # Build a validated EARToken first (type-checks the status tier, nonce bounds, and
+        # structure), then emit it in this verifier's Veraison wire format (dotted keys).
+        token = EARToken(
+            eat_profile=_EAT_PROFILE,  # override the draft-04 default with the Veraison profile
+            iat=int(time.time()),
+            ear_verifier_id={"build": "N/A", "developer": "eareat-hpke-verifier"},
+            eat_nonce=EATNonce(jose_jws.b64u_decode(nonce_b64url)),
+            submods={
+                self._scheme_name: EARAppraisal(
+                    ear_status=TrustworthinessTier(status),
+                    ear_trustworthiness_vector=trust_vector,
+                    ear_appraisal_policy_ids=[f"policy:{self._scheme_name}"],
+                )
             },
-        }
-        return jose_jws.sign_es256(payload, self._ear_signing_key)
+        )
+        return jose_jws.sign_es256(_ear_token_to_veraison_claims(token), self._ear_signing_key)
 
 
 __all__ = ["EarEatHpkeVerifier"]

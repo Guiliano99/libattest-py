@@ -19,6 +19,7 @@ dependencies = [
     "requests>=2.28.0",
     "cryptography>=49.0.0, <50.0.0",
     "PyJWT>=2.13.0",  # ES256 compact JWS sign/verify (jose_jws); ECDSA via the cryptography dep above
+    "pydantic>=2.9",  # EAR (EAT Attestation Result) token model (libattest.ear)
     "keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git",  # KeyAttestPoP sign/verify
     "tpm2-pytss>=2.3.0",  # mandatory: ESAPI access + TPMS_ATTEST parsing
 ]
