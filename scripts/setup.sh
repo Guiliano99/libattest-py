@@ -57,6 +57,54 @@ else
     pip install --upgrade uv
 fi
 
+# Ensure the tss2-esapi system C library is present (needed to build tpm2-pytss)
+# tpm2-pytss is a CFFI binding over the tpm2-tss C libraries: it cannot build or import
+# without the `tss2-esapi` development package (>= 2.4.0). pyproject.toml / uv only manage
+# Python packages, so this OS-level dependency is installed here, before `uv sync`.
+TSS2_MIN_VERSION="2.4.0"
+
+ensure_tss2() {
+    # Already satisfied? pkg-config reports the installed tss2-esapi version.
+    if command -v pkg-config &> /dev/null \
+       && pkg-config --atleast-version="$TSS2_MIN_VERSION" tss2-esapi 2> /dev/null; then
+        echo "tss2-esapi (>= $TSS2_MIN_VERSION) already present — skipping system install."
+        return 0
+    fi
+
+    echo "tss2-esapi (>= $TSS2_MIN_VERSION) not found; it is required to build tpm2-pytss."
+
+    # Only Debian/Ubuntu (apt) is auto-handled. On other systems install the equivalent
+    # of 'libtss2-dev' (e.g. Fedora: tpm2-tss-devel) manually, then re-run this script.
+    if ! command -v apt-get &> /dev/null; then
+        echo "WARNING: no apt-get found. Install the tss2-esapi dev package manually" >&2
+        echo "         (Debian/Ubuntu: libtss2-dev; Fedora: tpm2-tss-devel) and re-run." >&2
+        return 0
+    fi
+
+    # Use sudo only when we are not already root.
+    SUDO=""
+    if [ "$(id -u)" -ne 0 ]; then
+        SUDO="sudo"
+    fi
+
+    echo "Installing libtss2-dev via apt (may prompt for sudo)..."
+    $SUDO apt-get update || echo "apt-get update failed; continuing with the existing index."
+    $SUDO apt-get install -y libtss2-dev pkg-config
+
+    # apt installs whatever candidate the distro offers, which may still be older than
+    # required on an older release. Re-check so an unmet version constraint fails here with
+    # a clear message instead of as a cryptic tpm2-pytss build error later.
+    if command -v pkg-config &> /dev/null \
+       && ! pkg-config --atleast-version="$TSS2_MIN_VERSION" tss2-esapi 2> /dev/null; then
+        echo "ERROR: installed tss2-esapi is still < $TSS2_MIN_VERSION — this distro's" >&2
+        echo "       libtss2-dev is too old for tpm2-pytss; install a newer tpm2-tss." >&2
+        return 1
+    fi
+    echo "tss2-esapi (>= $TSS2_MIN_VERSION) is now available."
+}
+
+ensure_tss2
+
 # Use uv sync to install packages defined in pyproject.toml
 # 'uv sync' reads pyproject.toml and installs exactly the packages listed there
 # --all-extras also installs optional dependency groups (e.g. 'dev', 'pq')
