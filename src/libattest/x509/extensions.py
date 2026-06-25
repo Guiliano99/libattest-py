@@ -232,6 +232,42 @@ def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
     return _der_encoder.encode(cmw)
 
 
+def encode_cmw_json_record(media_type: str, value: str, cmw_type: int | None = None) -> bytes:
+    """Return the DER of a CMW ``json`` record ``[media-type, value(, cmw-type)]``.
+
+    A generic CMW (Conceptual Message Wrapper) JSON *record*
+    (draft-ietf-rats-msg-wrap-23 §3) carried in the CMW ``json`` (UTF8String)
+    alternative (§4.4).  Unlike :func:`wrap_ear_in_cmw_json`, *value* is placed
+    verbatim — callers pass an already-serialised message (e.g. a compact JOSE
+    JWE string).  ``cmw_type`` adds the optional third element (the CMW type
+    indicator, e.g. ``4``).  The result is wire-identical to encoding the bare
+    ``UTF8String`` (a CHOICE encodes as its selected alternative in DER).
+    """
+    record = [media_type, value] if cmw_type is None else [media_type, value, cmw_type]
+    cmw = CMW()
+    cmw.setComponentByName("json", char.UTF8String(json.dumps(record, separators=(",", ":"))))
+    return _der_encoder.encode(cmw)
+
+
+def decode_cmw_json_record(der: bytes) -> tuple[str, str, Optional[int]]:
+    """Decode a CMW ``json`` record DER into ``(media_type, value, cmw_type)``.
+
+    Accepts the DER of the :class:`CMW` CHOICE (or, wire-identically, a bare
+    ``UTF8String``).  Returns ``cmw_type`` as ``None`` when the record carries
+    only the two mandatory elements.
+
+    :raises ValueError: the bytes are not a CMW ``json`` record / malformed JSON.
+    """
+    cmw, _ = _der_decoder.decode(der, asn1Spec=CMW())
+    if cmw.getName() != "json":
+        raise ValueError("CMW is not a json record (expected the UTF8String alternative)")
+    record = json.loads(str(cmw["json"]))
+    if not isinstance(record, list) or len(record) < 2:
+        raise ValueError(f"malformed CMW json record: {record!r}")
+    cmw_type = record[2] if len(record) > 2 else None
+    return record[0], record[1], cmw_type
+
+
 def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
     """Encode an EAR JWT into an X.509 extension ``(oid, extn_value_der)`` pair.
 

@@ -23,6 +23,8 @@ from libattest.x509.extensions import (
     ID_PE_CMW_DOTTED,
     CMWCriticalityWarning,
     KeyAttestPoPCriticalityWarning,
+    decode_cmw_json_record,
+    encode_cmw_json_record,
     encode_ear_extension,
     get_key_attest_pop_oid,
     get_key_attest_pop_oid_dotted,
@@ -39,6 +41,8 @@ from libattest.x509.extensions import (
 __all__ = [
     "CMW",
     "CMWCriticalityWarning",
+    "decode_cmw_json_record",
+    "encode_cmw_json_record",
     "ID_KEY_ATTEST_POP",
     "ID_KEY_ATTEST_POP_DOTTED",
     "ID_PE_CMW",
