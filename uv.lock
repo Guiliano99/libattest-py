@@ -501,6 +501,7 @@ dependencies = [
     { name = "keyutils-py" },
     { name = "pyasn1" },
     { name = "pyasn1-alt-modules" },
+    { name = "pyjwt" },
     { name = "requests" },
     { name = "tpm2-pytss" },
 ]
@@ -534,6 +535,7 @@ requires-dist = [
     { name = "keyutils-py", git = "https://github.com/Guiliano99/keyutils-py.git" },
     { name = "pyasn1", specifier = ">=0.6.3" },
     { name = "pyasn1-alt-modules", specifier = ">=0.4.10" },
+    { name = "pyjwt", specifier = ">=2.10.0" },
     { name = "pylint", marker = "extra == 'dev'", specifier = ">=4.0.4,<5.0.0" },
     { name = "pyright", extras = ["nodejs"], marker = "extra == 'dev'", specifier = "==1.1.410" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0.0" },
@@ -914,6 +916,15 @@ version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/82/1a/8361466bb51a88a99e1d63c6ec0d1c611def8351b120c0c30ef2840f6689/pyhsslms-2.0.0-py2.py3-none-any.whl", hash = "sha256:1d9718213b2e7b91649bc81ee0ec5c23c9c30d7a4494c0223935ca1fd275c083", size = 17343, upload-time = "2023-10-26T16:20:28.816Z" },
+]
+
+[[package]]
+name = "pyjwt"
+version = "2.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/81/58d0ac84e1ef3a3843791d6954d94c0b33d526c75eeb1efbce9d0a4c4077/pyjwt-2.13.0.tar.gz", hash = "sha256:41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423", size = 107515, upload-time = "2026-05-21T19:54:36.618Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/5e/ecf12fdb62546d64385c158514e9b2b671f7832108ef2ecd2020ce0af2d1/pyjwt-2.13.0-py3-none-any.whl", hash = "sha256:66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728", size = 31274, upload-time = "2026-05-21T19:54:35.362Z" },
 ]
 
 [[package]]
