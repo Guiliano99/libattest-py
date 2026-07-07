@@ -7,8 +7,8 @@
 This is the reusable core extracted from the MockCA ``nonce_handler``: it owns
 nonce generation, per-transaction storage keyed by ``(tx_id, statement-OID,
 instance)``, one-shot consumption with replay/expiry detection, and the
-``respInfo`` lifecycle (the DER ``NonceResponse.respInfo`` the RA broadcast for
-a slot, stored alongside the nonce for the verifier hop).
+``respInfo`` lifecycle (the DER ``NonceResponse.respTypeInfo.respInfo`` the RA
+broadcast for a slot, stored alongside the nonce for the verifier hop).
 
 All CMP specifics are dropped: keys are ``bytes`` transaction identifiers and
 dot-form OID strings (never a ``PKIMessage``), and verifier-URL resolution is
@@ -65,9 +65,10 @@ class NonceState:
     consumed / consumed_at:
         One-shot consumption flag and timestamp.
     resp_info:
-        DER of the type-specific ``NonceResponse.respInfo`` for this slot
-        (e.g. ``TpmAttestationParams``), or ``None`` when the type carries no
-        respInfo.  Stored so the engine can forward it to the verifier.
+        DER of the type-specific ``NonceResponse.respTypeInfo.respInfo`` for
+        this slot (e.g. ``TPM20QuoteRespInfo``), or ``None`` when the type
+        carries no respInfo.  Stored so the engine can forward it to the
+        verifier.
 
     """
 
@@ -147,7 +148,8 @@ class NonceStore:
             Dot-form evidence-statement OID the nonce gates, or ``None`` for a
             positionally-addressed slot.
         resp_info:
-            Optional DER ``NonceResponse.respInfo`` to remember for this slot.
+            Optional DER ``NonceResponse.respTypeInfo.respInfo`` to remember
+            for this slot.
 
         Returns
         -------

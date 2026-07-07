@@ -2,69 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ASN.1 structures for attestation freshness nonce exchange.
-
-Specification links:
-* Datatracker: https://datatracker.ietf.org/doc/draft-ietf-lamps-attestation-freshness/
-* GitHub repository: https://github.com/lamps-wg/lamps-attestation-freshness
-* ASN.1 redesign PR: https://github.com/lamps-wg/lamps-attestation-freshness/pull/26
-
-This module follows the generic ASN.1 representation introduced by PR #26:
-``NonceRequest`` and ``NonceResponse`` carry one optional ``type`` OID and one
-matching open-type payload (``reqInfo`` or ``respInfo``).  The previous local
-``challengeParams`` / ``responseParams`` ``SEQUENCE OF ChallengeParam`` design is
-not part of the current draft shape.
-
-Current draft ASN.1 excerpt (old-style display form used in the draft)::
-
-    ATTESTATION-NONCE-REQUEST ::= TYPE-IDENTIFIER
-    AttestationNonceRequestSet ATTESTATION-NONCE-REQUEST ::= {
-       ... -- None defined in this document --
-    }
-
-    ATTESTATION-NONCE-RESPONSE ::= TYPE-IDENTIFIER
-    AttestationNonceResponseSet ATTESTATION-NONCE-RESPONSE ::= {
-       ... -- None defined in this document --
-    }
-
-    NonceRequest ::= SEQUENCE {
-       len INTEGER (8..64) OPTIONAL,
-       -- Indicates the required length of the requested nonce
-       type ATTESTATION-NONCE-REQUEST.&id(
-          {AttestationNonceRequestSet}) OPTIONAL,
-       -- Identifies the nonce-request syntax for the
-       --   selected Attestation statement type
-       reqInfo ATTESTATION-NONCE-REQUEST.&Type(
-          {AttestationNonceRequestSet}{@type}) OPTIONAL
-       -- Contains type-specific nonce-request information
-    }
-
-    NonceResponse ::= SEQUENCE {
-       nonce OCTET STRING (SIZE(0 | 8..64)),
-       -- Contains the nonce of length len
-       expiry INTEGER OPTIONAL,
-       -- Indicates how long in seconds the nonce issuer
-       --   considers the nonce valid
-       type ATTESTATION-NONCE-RESPONSE.&id(
-          {AttestationNonceResponseSet}) OPTIONAL,
-       -- Identifies the nonce-response syntax for the
-       --   selected Attestation statement type
-       respInfo ATTESTATION-NONCE-RESPONSE.&Type(
-          {AttestationNonceResponseSet}{@type}) OPTIONAL
-       -- Contains type-specific nonce-response information
-    }
-
-The ``TYPE-IDENTIFIER`` object sets are not modelled directly in pyasn1.  The
-wire-level representation is still an OBJECT IDENTIFIER discriminator plus an
-``ANY`` value containing the selected type-specific encoding.
-"""
+"""ASN.1 structures for the attestation freshness nonce exchange."""
 
 from __future__ import annotations
 
 from pyasn1.type import constraint, namedtype, univ
 
-id_it_nonceRequest = univ.ObjectIdentifier("1.2.840.113549.1.9.16.2.8888")
-id_it_nonceResponse = univ.ObjectIdentifier("1.2.840.113549.1.9.16.2.8889")
+id_it_nonceRequest = univ.ObjectIdentifier("1.3.6.1.5.5.7.4.98")
+id_it_nonceResponse = univ.ObjectIdentifier("1.3.6.1.5.5.7.4.99")
 
 _MIN_NONCE_LEN = 8
 _MAX_NONCE_LEN = 64
@@ -76,13 +21,30 @@ NonceValueSizeConstraint = constraint.ConstraintsUnion(
 )
 
 
-class NonceRequest(univ.Sequence):
-    """NonceRequest ::= SEQUENCE { len, type, reqInfo }.
+class NonceRequestTypeInfo(univ.Sequence):
+    """Type-specific request selector and optional open value."""
 
-    ``len`` is constrained to the draft range of 8..64 octets.
-    ``type`` identifies the type-specific request syntax.
-    ``reqInfo`` is an open type encoded as DER/BER bytes in ``ANY`` and MUST be
-    omitted unless ``type`` is present.
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType("type", univ.ObjectIdentifier()),
+        namedtype.OptionalNamedType("reqInfo", univ.Any()),
+    )
+
+
+class NonceResponseTypeInfo(univ.Sequence):
+    """Type-specific response selector and optional open value."""
+
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType("type", univ.ObjectIdentifier()),
+        namedtype.OptionalNamedType("respInfo", univ.Any()),
+    )
+
+
+class NonceRequest(univ.Sequence):
+    """NonceRequest ::= SEQUENCE { len, reqTypeInfo }.
+
+    ``reqTypeInfo`` groups the selected open type OID and its optional request
+    payload.  pyasn1 cannot model the information object set directly, so the
+    open value remains an ``ANY`` containing the selected DER/BER encoding.
     """
 
     componentType = namedtype.NamedTypes(
@@ -90,20 +52,17 @@ class NonceRequest(univ.Sequence):
             "len",
             univ.Integer().subtype(subtypeSpec=NonceLengthConstraint),
         ),
-        namedtype.OptionalNamedType("type", univ.ObjectIdentifier()),
-        namedtype.OptionalNamedType("reqInfo", univ.Any()),
+        namedtype.OptionalNamedType("reqTypeInfo", NonceRequestTypeInfo()),
     )
 
 
 class NonceResponse(univ.Sequence):
-    """NonceResponse ::= SEQUENCE { nonce, expiry, type, respInfo }.
+    """NonceResponse ::= SEQUENCE { nonce, expiry, respTypeInfo }.
 
     ``nonce`` is constrained to ``SIZE(0 | 8..64)``.  A zero-length value means
     the RA/CA does not require a freshness proof for the upcoming certificate
-    request (an RA/CA that is unable or unwilling to provide a nonce signals a
-    protocol error instead).  ``type`` identifies the type-specific response
-    syntax.  ``respInfo`` is an open type encoded as DER/BER bytes in ``ANY``
-    and MUST be omitted unless ``type`` is present.
+    request.  ``respTypeInfo`` groups the response open type OID and its
+    optional payload.
     """
 
     componentType = namedtype.NamedTypes(
@@ -112,9 +71,40 @@ class NonceResponse(univ.Sequence):
             univ.OctetString().subtype(subtypeSpec=NonceValueSizeConstraint),
         ),
         namedtype.OptionalNamedType("expiry", univ.Integer()),
-        namedtype.OptionalNamedType("type", univ.ObjectIdentifier()),
-        namedtype.OptionalNamedType("respInfo", univ.Any()),
+        namedtype.OptionalNamedType("respTypeInfo", NonceResponseTypeInfo()),
     )
+
+
+def nonce_request_type_oid(nonce_request: NonceRequest) -> str | None:
+    """Return ``reqTypeInfo.type`` as dotted text when present."""
+    req_type_info = nonce_request["reqTypeInfo"]
+    if not req_type_info.isValue:
+        return None
+    return str(req_type_info["type"])
+
+
+def nonce_request_info(nonce_request: NonceRequest) -> bytes | None:
+    """Return raw ``reqTypeInfo.reqInfo`` bytes when present."""
+    req_type_info = nonce_request["reqTypeInfo"]
+    if not req_type_info.isValue or not req_type_info["reqInfo"].isValue:
+        return None
+    return bytes(req_type_info["reqInfo"])
+
+
+def nonce_response_type_oid(nonce_response: NonceResponse) -> str | None:
+    """Return ``respTypeInfo.type`` as dotted text when present."""
+    resp_type_info = nonce_response["respTypeInfo"]
+    if not resp_type_info.isValue:
+        return None
+    return str(resp_type_info["type"])
+
+
+def nonce_response_info(nonce_response: NonceResponse) -> bytes | None:
+    """Return raw ``respTypeInfo.respInfo`` bytes when present."""
+    resp_type_info = nonce_response["respTypeInfo"]
+    if not resp_type_info.isValue or not resp_type_info["respInfo"].isValue:
+        return None
+    return bytes(resp_type_info["respInfo"])
 
 
 # Backward-compatible ``*ASN1`` aliases.  The TPMDemo libattest exported these
@@ -129,9 +119,15 @@ __all__ = [
     "NonceLengthConstraint",
     "NonceRequest",
     "NonceRequestASN1",
+    "NonceRequestTypeInfo",
     "NonceResponse",
     "NonceResponseASN1",
+    "NonceResponseTypeInfo",
     "NonceValueSizeConstraint",
     "id_it_nonceRequest",
     "id_it_nonceResponse",
+    "nonce_request_info",
+    "nonce_request_type_oid",
+    "nonce_response_info",
+    "nonce_response_type_oid",
 ]

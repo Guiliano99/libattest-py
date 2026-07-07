@@ -22,9 +22,11 @@ from __future__ import annotations
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from pyasn1.codec.der import decoder, encoder
 
 from libattest.formats import eareat_hpke as evidence
 from libattest.formats import jose_jws
+from libattest.formats.csrattest import NonceRequest, NonceResponse
 from libattest.verifier.eareat_hpke import EarEatHpkeVerifier
 from libattest.x509 import decode_cmw_json_record, encode_cmw_json_record
 
@@ -91,20 +93,14 @@ def test_cmw_record_roundtrip() -> None:
 
 
 def test_nonce_request_roundtrip() -> None:
-    from pyasn1.codec.der import decoder
-    from libattest.formats.csrattest import NonceRequest
-
     req_der = evidence.build_nonce_request(length=32)
     req, _ = decoder.decode(req_der, asn1Spec=NonceRequest())
     assert int(req["len"]) == 32
-    assert str(req["type"]) == evidence.EVIDENCE_ENC_PARAMS_OID
+    assert str(req["reqTypeInfo"]["type"]) == evidence.EVIDENCE_ENC_PARAMS_OID
 
 
 def test_nonce_response_without_respinfo() -> None:
     # A zero-length nonce / no respInfo means "no key advertised".
-    from pyasn1.codec.der import encoder
-    from libattest.formats.csrattest import NonceResponse
-
     resp = NonceResponse()
     resp["nonce"] = NONCE
     der = encoder.encode(resp)

@@ -39,9 +39,9 @@ class ProfileRegistry:
 
     Both lookup directions are needed:
 
-    * :meth:`by_request_type` — the nonce-issue side maps a ``NonceRequest.type``
-      to the statement OID under which the nonce is stored and to the respInfo
-      builder.
+    * :meth:`by_request_type` — the nonce-issue side maps a
+      ``NonceRequest.reqTypeInfo.type`` to the statement OID under which the
+      nonce is stored and to the respInfo builder.
     * :meth:`by_statement` — the evidence-dispatch side maps an
       ``AttestationStatement.type`` to the verifier, reference handler, and
       respInfo-JSON serialiser.

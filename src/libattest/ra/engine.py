@@ -8,8 +8,9 @@
 other carrier) drives.  It owns the RA flow that used to live spread across the
 MockCA's ``nonce_handler`` / ``rats_handler`` / ``attestation_verifier``:
 
-1. :meth:`issue_nonce` — resolve the profile for a ``NonceRequest.type``, build
-   the type-specific ``respInfo``, and issue a nonce in the :class:`NonceStore`.
+1. :meth:`issue_nonce` — resolve the profile for a ``NonceRequest.reqTypeInfo.type``,
+   build the type-specific response info, and issue a nonce in the
+   :class:`NonceStore`.
 2. :meth:`verify_bundle` — decode an ``AttestationBundle`` (libattest codec),
    and per statement: consume its nonce, resolve its profile, unwrap the
    statement, submit to the profile's verifier, run the optional reference
@@ -126,9 +127,10 @@ class RemoteAttestationEngine:
         tx_id:
             Transaction identifier the nonce is filed under.
         request_type_oid:
-            Dot-form ``NonceRequest.type`` OID, or ``None``.
+            Dot-form ``NonceRequest.reqTypeInfo.type`` OID, or ``None``.
         req_info:
-            Optional DER ``NonceRequest.reqInfo`` carrying negotiation params.
+            Optional DER ``NonceRequest.reqTypeInfo.reqInfo`` carrying
+            negotiation params.
 
         Returns
         -------
@@ -349,9 +351,9 @@ class RemoteAttestationEngine:
     ) -> NonceState:
         """Consume the nonce for a statement, OID-keyed with a positional fallback.
 
-        The bundle's ``AttestationStatement.type`` always carries an OID, but the
-        nonce-issue ``NonceRequest.type`` is optional: a typeless request files
-        the nonce under ``(None, position)`` instead of ``(oid, instance)``.
+        The bundle's ``AttestationStatement.type`` always carries an OID, but
+        ``NonceRequest.reqTypeInfo`` is optional: a typeless request files the
+        nonce under ``(None, position)`` instead of ``(oid, instance)``.
 
         Raises
         ------

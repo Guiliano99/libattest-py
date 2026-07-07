@@ -151,9 +151,10 @@ class VeraisonVerifierClient(AttestationVerifier):
             Optional dot-form OID of the evidence type, forwarded so the verifier
             can pick a backend without re-parsing.
         resp_info_json:
-            Optional plain-JSON ``NonceResponse.respInfo`` (not base64/DER),
-            forwarded so the verifier can confirm negotiated parameters
-            (e.g. the requested PCR set + hash algorithm for the TPM profile).
+            Optional plain-JSON ``NonceResponse.respTypeInfo.respInfo`` (not
+            base64/DER), forwarded so the verifier can confirm negotiated
+            parameters (e.g. the requested PCR set + hash algorithm for the TPM
+            profile).
 
         Returns
         -------

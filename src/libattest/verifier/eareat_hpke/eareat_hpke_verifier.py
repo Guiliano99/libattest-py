@@ -156,7 +156,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
         """Return a ``NonceResponse`` DER handing the attester *nonce* + this verifier's HPKE key.
 
         Uses libattest's CMP nonce-freshness structures (``NonceResponse``); the attester
-        reads ``respInfo`` to learn the recipient key to encrypt Evidence to.
+        reads ``respTypeInfo.respInfo`` to learn the recipient key to encrypt Evidence to.
         """
         return evidence.build_evidence_enc_nonce_response(
             nonce, self._hpke_recipient_key.public_key(), expiry=expiry

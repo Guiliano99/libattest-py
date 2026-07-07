@@ -12,6 +12,7 @@ from pyasn1.type import univ
 from libattest.formats.csrattest import (
     AttestationBundle,
     NonceResponse,
+    nonce_response_type_oid,
     prepare_attestation_bundle,
     prepare_multi_statement_bundle,
     prepare_opaque_attestation_statement,
@@ -27,6 +28,7 @@ class AttesterProvider(Protocol):
 
     def generate_evidence(self, nonce: bytes | None = None) -> AttestResult:
         """Generate evidence bound to an optional freshness nonce."""
+        ...
 
 
 class AttesterClient:
@@ -87,8 +89,8 @@ class AttesterClient:
             raise ValueError("CMP NonceResponse contains an empty nonce")
 
         selected_oid = str(oid) if oid is not None else None
-        if selected_oid is None and nonce_response["type"].isValue:
-            selected_oid = str(nonce_response["type"])
+        if selected_oid is None:
+            selected_oid = nonce_response_type_oid(nonce_response)
         if selected_oid is None and len(self._providers) == 1:
             selected_oid = next(iter(self._providers))
         if selected_oid is None:

@@ -22,8 +22,8 @@ verifier, and the MockCA all share one wire contract:
 
 End-to-end flow::
 
-    1. attester -> CA      NonceRequest(type=EVIDENCE_ENC_PARAMS_OID)      build_nonce_request
-    2. CA/verifier -> att. NonceResponse(nonce, respInfo=verifier HPKE SPKI) build_evidence_enc_nonce_response
+    1. attester -> CA      NonceRequest(reqTypeInfo.type=EVIDENCE_ENC_PARAMS_OID) build_nonce_request
+    2. CA/verifier -> att. NonceResponse(respTypeInfo.respInfo=HPKE SPKI)     build_evidence_enc_nonce_response
     3. attester            sign EAT, HPKE-seal, CMW-wrap, bundle           sign_and_build_evidence_bundle
     4. verifier            decode bundle -> HPKE-open -> verify -> appraise EarEatHpkeVerifier
 """
@@ -41,7 +41,9 @@ from pyasn1.type import univ
 from libattest.formats import jose_hpke, jose_jws
 from libattest.formats.csrattest import (
     NonceRequest,
+    NonceRequestTypeInfo,
     NonceResponse,
+    NonceResponseTypeInfo,
     decode_attestation_bundle,
     prepare_attestation_bundle,
     prepare_attestation_statement,
@@ -60,7 +62,7 @@ CMW_TYPE_JOSE = 4  # CMW type indicator for a JOSE message (draft-ietf-rats-msg-
 DEFAULT_KID = "eareat-hpke-verifier"
 
 
-# ── HPKE recipient key <-> SPKI DER (the NonceResponse.respInfo payload) ─────────
+# ── HPKE recipient key <-> SPKI DER (the NonceResponse.respTypeInfo.respInfo payload)
 def hpke_key_to_spki_der(public_key: ec.EllipticCurvePublicKey) -> bytes:
     """Serialise the verifier's HPKE recipient public key as SubjectPublicKeyInfo DER."""
     return public_key.public_bytes(
@@ -159,7 +161,9 @@ def build_nonce_request(*, length: int | None = 32, type_oid: str = EVIDENCE_ENC
     request = NonceRequest()
     if length is not None:
         request["len"] = length
-    request["type"] = univ.ObjectIdentifier(type_oid)
+    type_info = NonceRequestTypeInfo()
+    type_info["type"] = univ.ObjectIdentifier(type_oid)
+    request["reqTypeInfo"] = type_info
     return _der_encoder.encode(request)
 
 
@@ -173,7 +177,7 @@ def build_evidence_enc_nonce_response(
     """Build the ``NonceResponse`` DER that hands the attester the nonce + verifier HPKE key.
 
     ``respInfo`` carries the verifier's HPKE recipient public key as SubjectPublicKeyInfo
-    DER (an ANY payload selected by ``type``).
+    DER (an ANY payload selected by ``respTypeInfo.type``).
     """
     response = NonceResponse()
     # Assign the raw Python value for the size-constrained ``nonce`` field; wrapping it in
@@ -181,8 +185,10 @@ def build_evidence_enc_nonce_response(
     response["nonce"] = nonce
     if expiry is not None:
         response["expiry"] = expiry
-    response["type"] = univ.ObjectIdentifier(type_oid)
-    response["respInfo"] = univ.Any(hpke_key_to_spki_der(hpke_public_key))
+    type_info = NonceResponseTypeInfo()
+    type_info["type"] = univ.ObjectIdentifier(type_oid)
+    type_info["respInfo"] = univ.Any(hpke_key_to_spki_der(hpke_public_key))
+    response["respTypeInfo"] = type_info
     return _der_encoder.encode(response)
 
 
@@ -196,10 +202,11 @@ def parse_evidence_enc_nonce_response(
     """
     response, _ = _der_decoder.decode(der, asn1Spec=NonceResponse())
     nonce = bytes(response["nonce"])
-    type_oid = str(response["type"]) if response["type"].isValue else None
+    resp_type_info = response["respTypeInfo"]
+    type_oid = str(resp_type_info["type"]) if resp_type_info.isValue else None
     hpke_key = None
-    if response["respInfo"].isValue:
-        hpke_key = hpke_key_from_spki_der(bytes(response["respInfo"]))
+    if resp_type_info.isValue and resp_type_info["respInfo"].isValue:
+        hpke_key = hpke_key_from_spki_der(bytes(resp_type_info["respInfo"]))
     return nonce, hpke_key, type_oid
 
 

@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-from libattest.formats.csrattest import NonceResponse
+from libattest.formats.csrattest import NonceResponse, nonce_response_type_oid
 from libattest.types import AttestResult
 from libattest.verifier.endpoints import (
     CORIM_MEDIA_TYPE,
@@ -400,8 +400,8 @@ class AttestClient:
             raise ValueError("CMP NonceResponse contains an empty nonce")
 
         selected_oid = oid
-        if selected_oid is None and nonce_response["type"].isValue:
-            selected_oid = str(nonce_response["type"])
+        if selected_oid is None:
+            selected_oid = nonce_response_type_oid(nonce_response)
         if selected_oid is None and len(self._providers) == 1:
             selected_oid = next(iter(self._providers))
         if selected_oid is None:
