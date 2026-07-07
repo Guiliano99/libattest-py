@@ -3,9 +3,9 @@
 
 """OID-keyed lookup that serializes a type's ``respInfo`` to/from JSON.
 
-On the CMP wire ``NonceResponse.respInfo`` is DER-encoded ASN.1 (for the TPM
-platform profile, ``TpmAttestationParams``).  When the CA forwards the selection
-to an out-of-band verifier over HTTP, a JSON form is more convenient than DER.
+On the CMP wire ``NonceResponseTypeInfo.respInfo`` is DER-encoded ASN.1.  When
+the CA forwards the selection to an out-of-band verifier over HTTP, a JSON form
+is more convenient than DER.
 
 This module owns the DER↔JSON mapping **per attestation-type OID** so the CA
 stays generic: register ``(oid, to_json, from_json)`` once and the dispatcher
@@ -21,11 +21,11 @@ from typing import Any
 
 from pyasn1.type import univ
 
-from libattest.formats.tpm.attestation_params import (
-    decode_tpm_attestation_params,
-    encode_tpm_attestation_params,
-)
 from libattest.formats.tpm.pcr_selection import resolve_tpm_pcr_selection_oid
+from libattest.formats.tpm.quote_profile import (
+    decode_tpm20_quote_resp_info,
+    encode_tpm20_quote_resp_info,
+)
 from libattest.formats.tpm.tcg import id_tcg_attest_quote
 
 #: A DER(respInfo) → JSON-serialisable dict converter.
@@ -34,32 +34,42 @@ ToJson = Callable[["bytes | bytearray | univ.Any"], dict[str, Any]]
 FromJson = Callable[[Mapping[str, Any]], bytes]
 
 
-def tpm_attestation_params_to_json(der: bytes | bytearray | univ.Any) -> dict[str, Any]:
-    """Convert DER ``TpmAttestationParams`` into ``{"pcrs": [...], "hashAlgId": N}``.
+def tpm20_quote_resp_info_to_json(der: bytes | bytearray | univ.Any) -> dict[str, Any]:
+    """Convert DER ``TPM20QuoteRespInfo`` into JSON.
 
-    Absent optional fields are omitted from the JSON object (mirroring the
-    ASN.1 OPTIONAL semantics).
+    The JSON field names mirror the ASN.1 field names:
+    ``certificateName``, ``pcrSelection``, and ``hashAlgo``.
     """
-    pcrs, hash_alg_id = decode_tpm_attestation_params(der)
-    out: dict[str, Any] = {}
-    if pcrs is not None:
-        out["pcrs"] = pcrs
-    if hash_alg_id is not None:
-        out["hashAlgId"] = hash_alg_id
+    certificate_name, pcr_selection, hash_algo = decode_tpm20_quote_resp_info(der)
+    out: dict[str, Any] = {
+        "pcrSelection": pcr_selection,
+        "hashAlgo": hash_algo,
+    }
+    if certificate_name is not None:
+        out["certificateName"] = certificate_name
     return out
 
 
-def tpm_attestation_params_from_json(payload: Mapping[str, Any]) -> bytes:
-    """Convert ``{"pcrs": [...], "hashAlgId": N}`` back into DER ``TpmAttestationParams``.
+def tpm20_quote_resp_info_from_json(payload: Mapping[str, Any]) -> bytes:
+    """Convert JSON back into DER ``TPM20QuoteRespInfo``.
 
     Raises
     ------
     ValueError
-        If the payload carries neither field or values are out of range
-        (delegated to :func:`encode_tpm_attestation_params`).
+        If required fields are absent or values are out of range.
 
     """
-    return encode_tpm_attestation_params(payload.get("pcrs"), payload.get("hashAlgId"))
+    pcr_selection = payload.get("pcrSelection", payload.get("pcrs"))
+    hash_algo = payload.get("hashAlgo", payload.get("hashAlgId"))
+    if pcr_selection is None:
+        raise ValueError("TPM20QuoteRespInfo JSON requires pcrSelection")
+    if hash_algo is None:
+        raise ValueError("TPM20QuoteRespInfo JSON requires hashAlgo")
+    return encode_tpm20_quote_resp_info(
+        certificate_name=payload.get("certificateName"),
+        pcr_selection=pcr_selection,
+        hash_algo=hash_algo,
+    )
 
 
 class RespInfoRegistry:
@@ -101,23 +111,16 @@ class RespInfoRegistry:
 
 
 def _build_default_registry() -> RespInfoRegistry:
-    """Registry pre-seeded with the TPM platform-attestation respInfo codec.
-
-    The platform profile negotiates PCR selection under ``TPM_PCR_SELECTION_OID``
-    (the NonceRequest.type) and routes evidence under ``TcgAttestQuote``
-    (the AttestationStatement.type); both share the ``TpmAttestationParams``
-    codec, so a caller can look the codec up by whichever OID it holds.
-    """
     registry = RespInfoRegistry()
     registry.register(
         resolve_tpm_pcr_selection_oid(),
-        tpm_attestation_params_to_json,
-        tpm_attestation_params_from_json,
+        tpm20_quote_resp_info_to_json,
+        tpm20_quote_resp_info_from_json,
     )
     registry.register(
         id_tcg_attest_quote,
-        tpm_attestation_params_to_json,
-        tpm_attestation_params_from_json,
+        tpm20_quote_resp_info_to_json,
+        tpm20_quote_resp_info_from_json,
     )
     return registry
 
@@ -131,6 +134,6 @@ __all__ = [
     "FromJson",
     "RespInfoRegistry",
     "ToJson",
-    "tpm_attestation_params_from_json",
-    "tpm_attestation_params_to_json",
+    "tpm20_quote_resp_info_from_json",
+    "tpm20_quote_resp_info_to_json",
 ]

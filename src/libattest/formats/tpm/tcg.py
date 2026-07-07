@@ -38,10 +38,11 @@ def prepare_tcg_attest_certify(
 def decode_tcg_attest_certify(der: bytes | bytearray | univ.Any) -> TcgAttestCertify:
     """Decode DER into :class:`TcgAttestCertify`.
 
-    The same positional SEQUENCE serves both ``TcgAttestCertify`` (key
-    attestation, OID 2.23.133.20.1) and ``TcgAttestQuote`` (platform
-    attestation, OID 2.23.133.20.2): both are
-    ``SEQUENCE { tpmSAttest, signature, <opt 3rd field> }`` on the wire.
+    The same ``TcgAttestCertify`` SEQUENCE serves both key attestation (OID
+    2.23.133.20.1) and platform/quote attestation (OID 2.23.133.20.2): both
+    are ``SEQUENCE { tpmSAttest, signature, <opt 3rd field> }`` on the wire,
+    dispatched by the outer ``AttestationStatement.type`` OID rather than by a
+    distinct pyasn1 type.
 
     Raises
     ------

@@ -7,10 +7,11 @@
 An :class:`AttestationProfile` ties together everything the RA engine needs to
 handle one attestation type end-to-end:
 
-* the ``NonceRequest.type`` OID the client sends at nonce-issue time
+* the ``NonceRequest.reqTypeInfo.type`` OID the client sends at nonce-issue time
   (``request_type_oid`` — e.g. ``TPM_PCR_SELECTION_OID``),
 * the ``AttestationStatement.type`` OID the bundle carries
-  (``statement_oid`` — e.g. ``TcgAttestQuote`` ``2.23.133.20.2``),
+  (``statement_oid`` — e.g. TPM platform/quote attestation ``2.23.133.20.2``,
+  carried as a ``TcgAttestCertify`` value),
 * the **format codecs** (``unwrap_statement``, ``parse_req_info``,
   ``build_resp_info``, ``resp_info_to_json``, ``encode_ear_extension``), and
 * the two **pluggable services**: ``verifier`` (an
@@ -59,9 +60,8 @@ _SUPPORTED_HASH_ALG_IDS: frozenset[int] = frozenset({_DEFAULT_HASH_ALG_ID})
 
 
 def _negotiate_hash_alg_id(proposed: int | None) -> int:
-    """Echo the client's proposed ``hashAlgId`` when supported, else SHA-256."""
-    if proposed in _SUPPORTED_HASH_ALG_IDS:
-        return proposed  # type: ignore[return-value]
+    if proposed is not None and proposed in _SUPPORTED_HASH_ALG_IDS:
+        return proposed
     return _DEFAULT_HASH_ALG_ID
 
 
@@ -86,22 +86,22 @@ class AttestationProfile:
     Attributes
     ----------
     request_type_oid:
-        Dot-form ``NonceRequest.type`` OID (nonce-issue side).
+        Dot-form ``NonceRequest.reqTypeInfo.type`` OID (nonce-issue side).
     statement_oid:
         Dot-form ``AttestationStatement.type`` OID (evidence side).
     build_resp_info:
         ``(proposed_hash_alg_id) -> DER respInfo | None``.  Builds the DER
-        ``NonceResponse.respInfo`` for this type from the client's proposed
-        ``hashAlgId`` (``None`` when the type carries no respInfo).
+        ``NonceResponseTypeInfo.respInfo`` for this type from the client's
+        proposed hash algorithm (``None`` when the type carries no respInfo).
     resp_info_to_json:
         ``(DER respInfo) -> dict``.  Serialises the DER respInfo to the JSON the
         engine forwards to the verifier.
     resp_info_label:
         Human-readable name of the respInfo payload type (operator logs only).
     parse_req_info:
-        ``(reqInfo DER | None) -> hashAlgId int | None``.  Extracts the
-        client-proposed ``hashAlgId`` from this type's ``NonceRequest.reqInfo``
-        syntax.  Default: returns ``None`` (no negotiation).
+        ``(reqInfo DER | None) -> hashAlgId int | None``.  Extracts a
+        client-supported hash algorithm from this type's
+        ``NonceRequestTypeInfo.reqInfo`` syntax.  Default: returns ``None``.
     unwrap_statement:
         ``(stmt DER) -> (stmt_bytes, is_wrapped)``.  Unwraps the
         ``AttestationStatement.stmt`` open type.  Default: libattest's
@@ -173,18 +173,18 @@ def tpm_profile(
     verifier_url: str | None = None,
     reference_handler: VerifierReferenceHandler | None = None,
     pcrs: list[int] | None = None,
-    resp_info_label: str = "TpmAttestationParams",
+    certificate_name: str | None = None,
+    resp_info_label: str = "TPM20QuoteRespInfo",
     ear_oid: str = DEFAULT_EAR_EXT_OID,
 ) -> AttestationProfile:
-    """Build an :class:`AttestationProfile` for a TPM ``TpmAttestationParams`` type.
+    """Build an :class:`AttestationProfile` for the TPM 2.0 quote profile.
 
     Mirrors the MockCA ``tpm_route`` factory.  The profile:
 
-    * parses the client's proposed ``hashAlgId`` from a ``TpmAttestationParams``
-      reqInfo,
-    * when *pcrs* is given, broadcasts a ``TpmAttestationParams`` respInfo
-      carrying that PCR set + the negotiated hash algorithm (the quote leg);
-      when *pcrs* is ``None`` no respInfo is built (the certify leg),
+    * parses the client's ``supportedHashAlgo`` values from ``TPM20QuoteReqInfo``,
+    * when *pcrs* is given, broadcasts a ``TPM20QuoteRespInfo`` respInfo carrying
+      that PCR set + the negotiated hash algorithm (the quote leg); when *pcrs*
+      is ``None`` no respInfo is built (the certify leg),
     * serialises that respInfo DER → JSON via the libattest respInfo registry,
     * uses the libattest defaults for statement unwrap + EAR encoding.
 
@@ -194,33 +194,48 @@ def tpm_profile(
     # Lazy: the TPM format package eagerly imports native bindings on some hosts.
     from libattest.formats.respinfo import DEFAULT_RESP_INFO_REGISTRY  # noqa: PLC0415
     from libattest.formats.tpm import (  # noqa: PLC0415
-        decode_tpm_attestation_params,
-        make_pcr_selection_resp_info,
+        decode_tpm20_quote_req_info,
+        tpm20_quote_response_info,
     )
 
     def parse_req_info(req_info: bytes | None) -> int | None:
         if not req_info:
             return None
         try:
-            _pcrs, hash_alg_id = decode_tpm_attestation_params(bytes(req_info))
+            _certificate_names, supported_hash_algos = decode_tpm20_quote_req_info(bytes(req_info))
         except ValueError:
             return None
-        return hash_alg_id
+        if supported_hash_algos is None:
+            return None
+        for hash_alg_id in supported_hash_algos:
+            if hash_alg_id in _SUPPORTED_HASH_ALG_IDS:
+                return hash_alg_id
+        return None
 
     if pcrs is not None:
         pcrs_list = list(pcrs)
 
-        def build_resp_info(proposed: int | None) -> bytes | None:
-            return bytes(make_pcr_selection_resp_info(pcrs_list, _negotiate_hash_alg_id(proposed)))
+        def build_tpm20_quote_resp_info(proposed: int | None) -> bytes | None:
+            return bytes(
+                tpm20_quote_response_info(
+                    certificate_name=certificate_name,
+                    pcr_selection=pcrs_list,
+                    hash_algo=_negotiate_hash_alg_id(proposed),
+                )
+            )
+
+        selected_build_resp_info = build_tpm20_quote_resp_info
     else:
 
-        def build_resp_info(_proposed: int | None) -> bytes | None:
+        def no_resp_info(_proposed: int | None) -> bytes | None:
             return None
+
+        selected_build_resp_info = no_resp_info
 
     return AttestationProfile(
         request_type_oid=request_type_oid,
         statement_oid=statement_oid,
-        build_resp_info=build_resp_info,
+        build_resp_info=selected_build_resp_info,
         resp_info_to_json=lambda der, oid=statement_oid: DEFAULT_RESP_INFO_REGISTRY.to_json(oid, der),
         resp_info_label=resp_info_label,
         parse_req_info=parse_req_info,

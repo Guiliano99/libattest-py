@@ -3,27 +3,25 @@
 
 """TPM attestation formats."""
 
-from libattest.formats.tpm.attestation_params import (
-    TpmAttestationParamsASN1,
-    attestation_params_from_response_info,
-    attestation_params_request_info,
-    attestation_params_response_info,
-    decode_tpm_attestation_params,
-    encode_tpm_attestation_params,
-    make_pcr_selection_resp_info,
-)
 from libattest.formats.tpm.pcr_selection import (
     TPM_PCR_SELECTION_OID_DEFAULT,
     TPM_PCR_SELECTION_OID_ENV,
-    TpmPcrSelectionInfoASN1,
-    build_tpm_pcr_selection_json,
-    decode_tpm_pcr_selection_info,
-    encode_tpm_pcr_selection_info,
-    encode_tpm_pcr_selection_info_from_parts,
-    pcr_selection_from_response_info,
-    pcr_selection_response_info,
     resolve_tpm_pcr_selection_oid,
-    tpm_pcr_selection_json_value,
+)
+from libattest.formats.tpm.quote_profile import (
+    PCRIndex,
+    TPM20QuoteReqInfoASN1,
+    TPM20QuoteRespInfoASN1,
+    TPMAlgId,
+    decode_tpm20_quote_req_info,
+    decode_tpm20_quote_resp_info,
+    encode_tpm20_quote_req_info,
+    encode_tpm20_quote_resp_info,
+    id_tpm20_quote_req,
+    id_tpm20_quote_res,
+    tpm20_quote_request_info,
+    tpm20_quote_resp_info_from_response_info,
+    tpm20_quote_response_info,
 )
 from libattest.formats.tpm.tcg import (
     TcgAttestCertify,
@@ -35,8 +33,8 @@ from libattest.formats.tpm.tcg import (
 
 # ``tpms_attest`` is the only TPM-format module that hard-depends on the native
 # ``tpm2-pytss`` binding (it sources the TCG algorithm ids and the ``TPMS_ATTEST``
-# unmarshaller from it).  The pyasn1-only codecs above (attestation_params /
-# pcr_selection / tcg) carry the nonce-negotiation + respInfo helpers the MockCA
+# unmarshaller from it).  The pyasn1-only codecs above (pcr_selection /
+# quote_profile / tcg) carry the nonce-negotiation + respInfo helpers the MockCA
 # needs, and the MockCA image deliberately does NOT install ``tpm2-pytss``.
 #
 # Re-exporting ``tpms_attest`` eagerly here would therefore make *importing*
@@ -114,38 +112,36 @@ __all__ = [
     "TPM_ALG_SHA384",
     "TPM_ALG_SHA512",
     "TPM_GENERATED_VALUE",
+    "TPM20QuoteReqInfoASN1",
+    "TPM20QuoteRespInfoASN1",
     "TPM_PCR_SELECTION_OID_DEFAULT",
     "TPM_PCR_SELECTION_OID_ENV",
     "TPM_ST_ATTEST_QUOTE",
+    "TPMAlgId",
+    "PCRIndex",
     "TcgAttestCertify",
-    "TpmAttestationParamsASN1",
-    "TpmPcrSelectionInfoASN1",
     "TpmQuoteSignatureEvidence",
-    "attestation_params_from_response_info",
-    "attestation_params_request_info",
-    "attestation_params_response_info",
-    "build_tpm_pcr_selection_json",
     "compute_tpm_name",
     "decode_tcg_attest_certify",
-    "decode_tpm_attestation_params",
-    "decode_tpm_pcr_selection_info",
-    "encode_tpm_attestation_params",
-    "encode_tpm_pcr_selection_info",
-    "encode_tpm_pcr_selection_info_from_parts",
+    "decode_tpm20_quote_req_info",
+    "decode_tpm20_quote_resp_info",
+    "encode_tpm20_quote_req_info",
+    "encode_tpm20_quote_resp_info",
     "extract_certify_name",
     "extract_qualifying_data",
     "extract_quote_info",
     "id_tcg_attest_certify",
     "id_tcg_attest_quote",
-    "make_pcr_selection_resp_info",
+    "id_tpm20_quote_req",
+    "id_tpm20_quote_res",
     "ParsedAttest",
     "parse_tpms_attest",
     "pcr_indices_to_mask",
     "pcr_mask_to_indices",
-    "pcr_selection_from_response_info",
-    "pcr_selection_response_info",
     "prepare_tcg_attest_certify",
     "resolve_tpm_pcr_selection_oid",
-    "tpm_pcr_selection_json_value",
+    "tpm20_quote_request_info",
+    "tpm20_quote_resp_info_from_response_info",
+    "tpm20_quote_response_info",
     "verify_tpm_signature",
 ]

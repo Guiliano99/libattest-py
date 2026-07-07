@@ -174,9 +174,9 @@ def test_decode_tcg_attest_certify_round_trip():
 
 
 def test_make_pcr_selection_resp_info_round_trips_via_registry():
-    der = bytes(tpm_formats.make_pcr_selection_resp_info([0, 1, 2, 3, 4], 0x000B))
+    der = bytes(tpm_formats.tpm20_quote_response_info(pcr_selection=[0, 1, 2, 3, 4], hash_algo=0x000B))
     as_json = respinfo.DEFAULT_RESP_INFO_REGISTRY.to_json("2.23.133.20.2", der)
-    assert as_json == {"pcrs": [0, 1, 2, 3, 4], "hashAlgId": 11}
+    assert as_json == {"pcrSelection": [0, 1, 2, 3, 4], "hashAlgo": 11}
     back = respinfo.DEFAULT_RESP_INFO_REGISTRY.from_json("2.23.133.20.2", as_json)
     assert bytes(back) == der
 
@@ -222,8 +222,7 @@ def test_tpm_profile_engine_forwards_resp_info_json():
     engine = RemoteAttestationEngine(profiles)
 
     tx = b"\x0b" * 16
-    # reqInfo proposes SHA-256 (0x000B); the profile echoes it in respInfo.
-    req_info = tpm_formats.encode_tpm_attestation_params(hash_alg_id=0x000B)
+    req_info = tpm_formats.encode_tpm20_quote_req_info(supported_hash_algos=[0x000B])
     state = engine.issue_nonce(tx, "1.3.6.1.4.1.99999.5", req_info=req_info)
     assert state.resp_info is not None  # the quote leg broadcasts a respInfo
 
@@ -235,5 +234,4 @@ def test_tpm_profile_engine_forwards_resp_info_json():
     assert outcome.first_ear == "tpm.ear.jwt"
     assert captured["oid"] == quote_oid
     assert captured["nonce"] == state.nonce
-    # The DER respInfo was serialised to the TpmAttestationParams JSON shape.
-    assert captured["resp_info_json"] == {"pcrs": [0, 1, 2, 3, 4], "hashAlgId": 11}
+    assert captured["resp_info_json"] == {"pcrSelection": [0, 1, 2, 3, 4], "hashAlgo": 11}
