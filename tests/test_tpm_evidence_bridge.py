@@ -1,0 +1,195 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit tests for the TPM evidence bridge that do not require a live TPM.
+
+These exercise pure encode/decode logic: TSS2 PEM parsing, the
+``signature_wire_bytes`` wire format (cross-checked against the verifier's own
+``tpm_signature.verify_tpm_signature`` parser — the real byte contract the
+attester and verifier must agree on), and ``generate_tpm_evidence``'s
+input validation. The TPM-driving paths (``TpmClient.certify``/``load_ak`` and
+``quote(include_pcr_values=True)`` against a real ``TPM2_Certify``/
+``TPM2_Quote``) need a live TCTI (``libtpms:``/``mssim:``) that isn't available
+in this sandbox and have no executable coverage in this repo: the docker/tpm-demo
+demos drive the older ``provision_ak``/``activate_credential``/plain-``quote``
+entry points, not these. ``generate_tpm_evidence`` is a library seam for an
+external embedder (gencmpclient via ``Py_Initialize``); its live behaviour is
+validated by that embedder's own e2e, not here.
+"""
+
+from __future__ import annotations
+
+import base64
+import struct
+
+import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from pyasn1.codec.der import encoder as der_encoder
+from pyasn1.type import tag, univ
+from tpm2_pytss import TPM2_ALG
+from tpm2_pytss.types import TPM2B_PRIVATE, TPM2B_PUBLIC, TPMT_PUBLIC, TPMT_SIGNATURE
+
+from libattest.attester.evidence_bridge import generate_tpm_evidence
+from libattest.attester.tpm_client import (
+    CertifyResult,
+    QuoteResult,
+    _read_tss2_private_key_pem,
+)
+from libattest.formats.tpm.tpm_signature import verify_tpm_signature
+
+_SHA256 = TPM2_ALG.SHA256
+
+
+def _rsa_ak_template() -> TPM2B_PUBLIC:
+    # No explicit signing scheme: these tests only need a syntactically valid
+    # TPM2B_PUBLIC to marshal/unmarshal, not a fully-formed AK template (that
+    # requires the sign/decrypt-attribute-vs-scheme dance TpmClient._ak_template
+    # already does correctly for real key creation).
+    public_area = TPMT_PUBLIC.parse(alg="rsa2048")
+    return TPM2B_PUBLIC(publicArea=public_area)
+
+
+def _tss2_pem(parent_handle: int, pubkey: bytes, privkey: bytes, *, trailing: bool = False) -> bytes:
+    """Build a synthetic "TSS2 PRIVATE KEY" PEM matching tpm2-openssl's ASN.1 shape."""
+    seq = univ.Sequence()
+    seq.setComponentByPosition(0, univ.ObjectIdentifier("2.23.133.10.1.3"))
+    seq.setComponentByPosition(
+        1, univ.Boolean(False).subtype(explicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0))
+    )
+    seq.setComponentByPosition(2, univ.Integer(parent_handle))
+    seq.setComponentByPosition(3, univ.OctetString(pubkey))
+    seq.setComponentByPosition(4, univ.OctetString(privkey))
+    if trailing:
+        seq.setComponentByPosition(5, univ.OctetString(b"policy-or-whatever-trailing-field"))
+    der = der_encoder.encode(seq)
+    body = base64.b64encode(der)
+    lines = b"\n".join(body[i : i + 64] for i in range(0, len(body), 64))
+    return b"-----BEGIN TSS2 PRIVATE KEY-----\n" + lines + b"\n-----END TSS2 PRIVATE KEY-----\n"
+
+
+def test_read_tss2_private_key_pem_round_trip(tmp_path):
+    tpm2b_public = _rsa_ak_template()
+    pubkey_bytes = bytes(tpm2b_public.marshal())
+    privkey_bytes = b"\x00\x20" + b"\xab" * 32  # a plausible-shaped TPM2B_PRIVATE blob
+
+    path = tmp_path / "subject.tss2.pem"
+    path.write_bytes(_tss2_pem(0x81000001, pubkey_bytes, privkey_bytes))
+
+    parent_handle, parsed_public, parsed_private = _read_tss2_private_key_pem(str(path))
+
+    assert parent_handle == 0x81000001
+    assert bytes(parsed_public.marshal()) == pubkey_bytes
+    assert bytes(parsed_private.marshal()) == bytes(
+        TPM2B_PRIVATE.unmarshal(privkey_bytes)[0].marshal()
+    )
+
+
+def test_read_tss2_private_key_pem_tolerates_trailing_optional_fields(tmp_path):
+    tpm2b_public = _rsa_ak_template()
+    pubkey_bytes = bytes(tpm2b_public.marshal())
+    privkey_bytes = b"\x00\x20" + b"\xcd" * 32
+
+    path = tmp_path / "subject.tss2.pem"
+    path.write_bytes(_tss2_pem(0x81000002, pubkey_bytes, privkey_bytes, trailing=True))
+
+    parent_handle, parsed_public, _parsed_private = _read_tss2_private_key_pem(str(path))
+    assert parent_handle == 0x81000002
+    assert bytes(parsed_public.marshal()) == pubkey_bytes
+
+
+def test_read_tss2_private_key_pem_rejects_wrong_label(tmp_path):
+    path = tmp_path / "wrong.pem"
+    path.write_bytes(b"-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n")
+    with pytest.raises(ValueError, match="TSS2 PRIVATE KEY"):
+        _read_tss2_private_key_pem(str(path))
+
+
+def test_signature_wire_bytes_matches_verifier_parser():
+    """The attester's signature_wire_bytes must decode under the verifier's own parser.
+
+    This is the load-bearing cross-module contract: whatever TpmClient hands
+    the evidence bridge must be exactly what tpm_verifier.py's
+    verify_tpm_signature() (the real e2e verifier) expects on the wire.
+    """
+    ak_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    signed_bytes = b"pretend this is a marshalled TPMS_ATTEST"
+    raw_sig = ak_key.sign(signed_bytes, padding.PKCS1v15(), hashes.SHA256())
+
+    sig = TPMT_SIGNATURE(sigAlg=TPM2_ALG.RSASSA)
+    sig.signature.rsassa.hash = _SHA256
+    sig.signature.rsassa.sig = raw_sig
+
+    result = QuoteResult(
+        quoted=None,
+        signature=sig,
+        magic=0xFF544347,
+        attest_type=0x8018,
+        nonce=b"",
+        qualified_signer=b"",
+        clock=0,
+        reset_count=0,
+        restart_count=0,
+        safe=True,
+        firmware_version=0,
+        pcr_digest=b"",
+        pcr_selection="",
+        sig_alg=int(TPM2_ALG.RSASSA),
+        sig_hash=int(_SHA256),
+        sig_value=raw_sig,
+    )
+
+    # Must not raise: the verifier's own parser accepts the attester's wire bytes
+    # and the signature verifies under the AK public key.
+    verify_tpm_signature(
+        signed_bytes=signed_bytes,
+        tpmt_signature=result.signature_wire_bytes,
+        public_key=ak_key.public_key(),
+    )
+
+    with pytest.raises(InvalidSignature):
+        verify_tpm_signature(
+            signed_bytes=b"tampered bytes",
+            tpmt_signature=result.signature_wire_bytes,
+            public_key=ak_key.public_key(),
+        )
+
+
+def test_certify_result_tpmt_public_matches_marshalled_public_area():
+    tpm2b_public = _rsa_ak_template()
+    result = CertifyResult(
+        quoted=None,
+        signature=TPMT_SIGNATURE(sigAlg=TPM2_ALG.RSASSA),
+        magic=0xFF544347,
+        attest_type=0x8017,
+        nonce=b"nonce",
+        qualified_signer=b"",
+        tpmt_public=bytes(tpm2b_public.publicArea.marshal()),
+    )
+    # tpmTPublic must be the BARE TPMT_PUBLIC (no TPM2B size prefix) -- a
+    # nameAlg is readable at byte offset 2, per compute_tpm_name's contract.
+    name_alg = struct.unpack_from(">H", result.tpmt_public, 2)[0]
+    assert name_alg == int(_SHA256)
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"kind": "bogus", "nonce": b"n", "tcti": "libtpms:", "ak_handle": 1}, "unknown kind"),
+        (
+            {"kind": "certify", "nonce": b"n", "tcti": "libtpms:", "ak_handle": 1, "subject_key_pem": None},
+            "requires subject_key_pem",
+        ),
+    ],
+)
+def test_generate_tpm_evidence_validates_before_touching_the_tpm(kwargs, match):
+    """Bad calls must fail fast -- before generate_tpm_evidence ever opens a TCTI.
+
+    No real/simulated TPM is reachable in this sandbox, so if these raised
+    from inside the TpmClient connect path instead of the upfront validation,
+    this test would hang/error on the TCTI instead of asserting the message.
+    """
+    with pytest.raises(ValueError, match=match):
+        generate_tpm_evidence(**kwargs)

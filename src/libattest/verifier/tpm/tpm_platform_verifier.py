@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
-from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from cryptography.hazmat.primitives import serialization
+from tpm2_pytss.types import TPMT_SIGNATURE
 
+from libattest.formats.tpm.tpm_signature import to_tpm2b_public
 from libattest.formats.tpm.tpms_attest import (
     TPM_ALG_ECDSA,
     TPM_ALG_RSAPSS,
@@ -30,13 +30,6 @@ from libattest.formats.tpm.tpms_attest import (
 from libattest.types import VerifyResult
 from libattest.verifier.tpm.base import TpmReferenceVerifier
 from libattest.verifier.tpm.reference_values import PcrReferenceValues, verify_pcr_quote
-
-_TPM_HASH_TO_CRYPTO = {
-    TPM_ALG_SHA1: hashes.SHA1,
-    TPM_ALG_SHA256: hashes.SHA256,
-    TPM_ALG_SHA384: hashes.SHA384,
-    TPM_ALG_SHA512: hashes.SHA512,
-}
 
 
 def _load_ak_public_key(data: bytes):
@@ -59,52 +52,45 @@ def _load_ak_public_key(data: bytes):
     raise ValueError("AK public key must be SPKI or X.509 certificate bytes")
 
 
+def _build_tpmt_signature(evidence: TpmQuoteSignatureEvidence) -> TPMT_SIGNATURE:
+    """Reconstruct a TPMT_SIGNATURE from the evidence's already-decomposed fields.
+
+    ``TpmQuoteSignatureEvidence`` carries the signature pre-split into
+    algorithm/hash/raw-value (unlike the wire-format bytes
+    :func:`~libattest.formats.tpm.tpm_signature.verify_tpm_signature` takes),
+    so this is the one place that still switches on the TPM signature scheme —
+    to know which ``TPMT_SIGNATURE`` union field to populate. The actual
+    cryptographic verification is delegated to tpm2-pytss either way.
+    """
+    signature = TPMT_SIGNATURE(sigAlg=evidence.signature_algorithm)
+    if evidence.signature_algorithm == TPM_ALG_RSASSA:
+        signature.signature.rsassa.hash = evidence.signature_hash
+        signature.signature.rsassa.sig = evidence.signature
+    elif evidence.signature_algorithm == TPM_ALG_RSAPSS:
+        signature.signature.rsapss.hash = evidence.signature_hash
+        signature.signature.rsapss.sig = evidence.signature
+    elif evidence.signature_algorithm == TPM_ALG_ECDSA:
+        half = len(evidence.signature) // 2
+        if half == 0 or len(evidence.signature) % 2:
+            raise ValueError("ECDSA quote signature must be r||s with even length")
+        signature.signature.ecdsa.hash = evidence.signature_hash
+        signature.signature.ecdsa.signatureR = evidence.signature[:half]
+        signature.signature.ecdsa.signatureS = evidence.signature[half:]
+    else:
+        raise ValueError(f"unsupported TPM signature algorithm {evidence.signature_algorithm:#06x}")
+    return signature
+
+
 def _verify_ak_signature(evidence: TpmQuoteSignatureEvidence) -> tuple[bool, str]:
-    hash_cls = _TPM_HASH_TO_CRYPTO.get(evidence.signature_hash)
-    if hash_cls is None:
-        return False, f"unsupported TPM signature hash {evidence.signature_hash:#06x}"
-    hash_alg = hash_cls()
     try:
-        public_key = _load_ak_public_key(evidence.ak_public_key)
-        if evidence.signature_algorithm == TPM_ALG_RSASSA:
-            if not isinstance(public_key, rsa.RSAPublicKey):
-                return False, "RSASSA quote signature requires an RSA AK public key"
-            public_key.verify(
-                evidence.signature,
-                evidence.attestation,
-                padding.PKCS1v15(),
-                hash_alg,
-            )
-            return True, "quote signature verifies under AK public key"
-        if evidence.signature_algorithm == TPM_ALG_RSAPSS:
-            if not isinstance(public_key, rsa.RSAPublicKey):
-                return False, "RSAPSS quote signature requires an RSA AK public key"
-            public_key.verify(
-                evidence.signature,
-                evidence.attestation,
-                padding.PSS(mgf=padding.MGF1(hash_alg), salt_length=padding.PSS.DIGEST_LENGTH),
-                hash_alg,
-            )
-            return True, "quote signature verifies under AK public key"
-        if evidence.signature_algorithm == TPM_ALG_ECDSA:
-            if not isinstance(public_key, ec.EllipticCurvePublicKey):
-                return False, "ECDSA quote signature requires an EC AK public key"
-            half = len(evidence.signature) // 2
-            if half == 0 or len(evidence.signature) % 2:
-                return False, "ECDSA quote signature must be r||s with even length"
-            r = int.from_bytes(evidence.signature[:half], "big")
-            s = int.from_bytes(evidence.signature[half:], "big")
-            public_key.verify(
-                encode_dss_signature(r, s),
-                evidence.attestation,
-                ec.ECDSA(hash_alg),
-            )
-            return True, "quote signature verifies under AK public key"
+        signature = _build_tpmt_signature(evidence)
+        public_key = to_tpm2b_public(_load_ak_public_key(evidence.ak_public_key))
+        signature.verify_signature(public_key, evidence.attestation)
+        return True, "quote signature verifies under AK public key"
     except InvalidSignature:
         return False, "quote signature does not verify under AK public key"
     except (TypeError, ValueError) as exc:
         return False, str(exc)
-    return False, f"unsupported TPM signature algorithm {evidence.signature_algorithm:#06x}"
 
 
 class TpmPlatformVerifier(TpmReferenceVerifier):

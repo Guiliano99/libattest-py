@@ -38,9 +38,14 @@ All section numbers below refer to the TPM 2.0 Library Specification v1.85:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
+import re
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Optional, Tuple, Union
 
+from pyasn1.codec.der import decoder as der_decoder
+from pyasn1.type import univ
 from tpm2_pytss import (
     ESAPI,
     ESYS_TR,
@@ -52,9 +57,11 @@ from tpm2_pytss import (
     TPM2B_ENCRYPTED_SECRET,
     TPM2B_ID_OBJECT,
     TPM2B_NAME,
+    TPM2B_PRIVATE,
     TPM2B_PUBLIC,
     TPMA_OBJECT,
     TPMT_PUBLIC,
+    TPMT_SIG_SCHEME,
     TPMT_SIGNATURE,
     TSS2_Exception,
 )
@@ -74,6 +81,58 @@ from libattest.formats.tpm.tpms_attest import (
     parse_tpms_attest,
     pcr_mask_to_indices,
 )
+
+# --------------------------------------------------------------------------- #
+# TSS2 PRIVATE KEY PEM parsing (subject key for certify)
+# --------------------------------------------------------------------------- #
+_TSS2_PEM_LABEL = b"TSS2 PRIVATE KEY"
+_PEM_RE = re.compile(
+    rb"-----BEGIN (?P<label>[A-Z0-9 ]+)-----(?P<body>.*?)-----END (?P=label)-----",
+    re.DOTALL,
+)
+
+
+def _read_tss2_private_key_pem(path: str) -> Tuple[int, TPM2B_PUBLIC, TPM2B_PRIVATE]:
+    """Parse a tpm2-openssl "TSS2 PRIVATE KEY" PEM into its TPM components.
+
+    ``TSSPrivKey ::= SEQUENCE { type OID, emptyAuth [0] EXPLICIT BOOLEAN
+    OPTIONAL, parent INTEGER, pubkey OCTET STRING, privkey OCTET STRING, ... }``
+    (tpm2-tss-engine / tpm2-openssl convention; mirrors gencmpclient's C
+    ``TSSPRIVKEY`` ASN.1 reader in the now-retired ``tpm_ops.c``). Optional
+    trailing fields (policy, secret, authPolicy, description, rsaParent) are
+    ignored — decoded schema-less (no fixed pyasn1 spec) precisely so a
+    strict component-count check doesn't reject them.
+    """
+    match = _PEM_RE.search(Path(path).read_bytes())
+    if match is None or match.group("label") != _TSS2_PEM_LABEL:
+        raise ValueError(f"expected a {_TSS2_PEM_LABEL.decode()!r} PEM at {path}")
+    der = base64.b64decode(re.sub(rb"\s+", b"", match.group("body")))
+
+    fields, rest = der_decoder.decode(der)
+    if rest:
+        raise ValueError(f"{path}: trailing bytes after TSSPrivKey DER")
+    # fields[0] = type OID (ignored); fields[1] is emptyAuth (Boolean) only
+    # when present, so parent/pubkey/privkey shift by one accordingly.
+    index = 2 if isinstance(fields.getComponentByPosition(1), univ.Boolean) else 1
+    parent_handle = int(fields.getComponentByPosition(index))
+    pubkey_bytes = bytes(fields.getComponentByPosition(index + 1))
+    privkey_bytes = bytes(fields.getComponentByPosition(index + 2))
+
+    tpm2b_public, _consumed = TPM2B_PUBLIC.unmarshal(pubkey_bytes)
+    tpm2b_private, _consumed = TPM2B_PRIVATE.unmarshal(privkey_bytes)
+    return parent_handle, tpm2b_public, tpm2b_private
+
+
+def _read_pcr_values_raw(ectx: ESAPI, pcr_selection: str) -> bytes:
+    """Read the concatenated raw PCR digests for *pcr_selection*, ascending index order.
+
+    This is the exact preimage ``TPMS_QUOTE_INFO.pcrDigest`` hashes, matching
+    the retired C ``tpm_ops.c``'s ``read_pcr_values()`` — the verifier's
+    ``G_PCR_VALUES_BIND`` gate recomputes ``H(these bytes)`` and checks it
+    against the signed digest.
+    """
+    _update_counter, _selection_out, digests = ectx.pcr_read(pcr_selection)
+    return b"".join(bytes(digests.digests[i]) for i in range(digests.count))
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -172,6 +231,18 @@ class QuoteResult:
     sig_hash: int  # hash algorithm inside the signature
     sig_value: bytes  # raw signature bytes (RSA) or r||s (ECC)
 
+    pcr_values: bytes = b""  # raw per-PCR digests, ascending index order (see quote(include_pcr_values=))
+
+    @property
+    def signature_wire_bytes(self) -> bytes:
+        """The full marshalled ``TPMT_SIGNATURE`` (sigAlg||hashAlg||size||sig).
+
+        This is the wire format the ``TcgAttestQuote``/``TcgAttestCertify``
+        ``signature`` field carries — distinct from :attr:`sig_value`, which is
+        only the decomposed raw signature bytes.
+        """
+        return bytes(self.signature.marshal())
+
     @property
     def is_tpm_generated(self) -> bool:
         """True iff the statement begins with ``TPM_GENERATED_VALUE``."""
@@ -255,6 +326,51 @@ class QuoteResult:
         }
 
 
+# --------------------------------------------------------------------------- #
+# Parsed certify result
+# --------------------------------------------------------------------------- #
+@dataclass
+class CertifyResult:
+    """A ``TPM2_Certify`` response unpacked into plain Python.
+
+    Mirrors :class:`QuoteResult`'s shape for the header fields (shared via
+    :func:`~libattest.formats.tpm.tpms_attest.parse_tpms_attest`); ``tpmt_public``
+    replaces the quote's PCR fields with the bare marshalled ``TPMT_PUBLIC`` of
+    the certified (subject) key, which the verifier hashes to recompute
+    ``TPMS_CERTIFY_INFO.name`` (the G1 key-binding check).
+    """
+
+    quoted: TPM2B_ATTEST
+    signature: TPMT_SIGNATURE
+
+    magic: int
+    attest_type: int  # TPMS_ATTEST.type (0x8017 == ATTEST_CERTIFY)
+    nonce: bytes
+    qualified_signer: bytes
+
+    tpmt_public: bytes  # bare marshalled TPMT_PUBLIC of the certified subject key
+
+    @property
+    def attestation_bytes(self) -> bytes:
+        """The exact octets that were signed (see :attr:`QuoteResult.attestation_bytes`)."""
+        return bytes(self.quoted)
+
+    @property
+    def signature_wire_bytes(self) -> bytes:
+        """The full marshalled ``TPMT_SIGNATURE`` (see :attr:`QuoteResult.signature_wire_bytes`)."""
+        return bytes(self.signature.marshal())
+
+    def summary(self) -> str:
+        """Return a human-readable multi-line dump of the parsed certify result."""
+        return (
+            f"magic           = {self.magic:#010x}\n"
+            f"type            = {self.attest_type:#06x} (ATTEST_CERTIFY)\n"
+            f"nonce/extraData = {self.nonce.hex()}\n"
+            f"qualifiedSigner = {self.qualified_signer.hex()}\n"
+            f"tpmTPublic      = {len(self.tpmt_public)} bytes"
+        )
+
+
 def _selections_to_str(pcr_selections: list[dict]) -> str:
     """Render parsed ``pcr_selections`` as e.g. ``'sha256:0,1,2,3'``.
 
@@ -308,6 +424,10 @@ class TpmClient:
         self.ak_handle: Optional[ESYS_TR] = None
         self.ak_public: Optional[TPM2B_PUBLIC] = None
         self.ak_name: Optional[TPM2B_NAME] = None
+        # False for an AK loaded via load_ak() (a persistent handle we don't
+        # own); close() must not flush it, mirroring tpm_ops.c never flushing
+        # the AK's ESYS_TR (only the transient subject key is flushed).
+        self._ak_owned: bool = False
 
     # -- lifecycle --------------------------------------------------------- #
     def __enter__(self) -> "TpmClient":
@@ -335,10 +455,19 @@ class TpmClient:
         return self
 
     def close(self) -> None:
-        """Flush the EK/AK handles and close the ESAPI context (idempotent)."""
+        """Flush the EK/AK handles and close the ESAPI context (idempotent).
+
+        The AK is only flushed when this client created it (:meth:`provision_ak`);
+        an AK bound via :meth:`load_ak` is a persistent handle we don't own, and
+        flushing its ``ESYS_TR`` would evict ESAPI's local tracking of a key
+        other callers may still be using through the same persistent handle.
+        """
         if self._ectx is None:
             return
-        for handle in (self.ak_handle, self.ek_handle):
+        handles = [self.ek_handle]
+        if self._ak_owned:
+            handles.append(self.ak_handle)
+        for handle in handles:
             if handle is not None:
                 try:
                     self._ectx.flush_context(handle)
@@ -398,13 +527,31 @@ class TpmClient:
         self.ak_public = public
         self.ak_name = public.get_name()  # nameAlg || H_nameAlg(publicArea)
         self._hash_alg = chosen_hash
+        self._ak_owned = True
         return public, self.ak_name
+
+    def load_ak(self, ak_handle: int) -> TPM2B_PUBLIC:
+        """Bind to an existing persistent AK by handle (e.g. ``0x81010002``).
+
+        Unlike :meth:`provision_ak`, this does not create a key — it maps the
+        already-provisioned persistent handle to an ``ESYS_TR`` and reads its
+        public area, mirroring gencmpclient's ``Esys_TR_FromTPMPublic(ak_handle)``
+        (see the retired C ``tpm_ops.c``). The AK is not flushed by :meth:`close`.
+        """
+        tr = self.ectx.tr_from_tpmpublic(ak_handle)
+        public, name, _qualified_name = self.ectx.read_public(tr)
+        self.ak_handle = tr
+        self.ak_public = public
+        self.ak_name = name
+        self._ak_owned = False
+        return public
 
     # -- the statement ----------------------------------------------------- #
     def quote(
         self,
         nonce: Union[bytes, str],
         pcr_selection: str = "sha256:0,1,2,3,4",
+        include_pcr_values: bool = False,
     ) -> QuoteResult:
         """Run ``TPM2_Quote`` and return the parsed result.
 
@@ -418,6 +565,12 @@ class TpmClient:
             tpm2-tools-style ``'bank:idx,idx,...'``.  The *bank* name (e.g.
             ``sha256``) selects which PCR bank is read; this is independent of
             the AK's signing hash.
+        include_pcr_values:
+            When set, also run ``TPM2_PCR_Read`` over the same *pcr_selection*
+            and populate :attr:`QuoteResult.pcr_values` with the raw per-PCR
+            digests.  This is what lets a verifier run ``G_PCR_VALUES_BIND``
+            (recompute ``H(pcr_values) == pcrDigest``); omit it for a
+            digest-only quote.
 
         Notes
         -----
@@ -428,7 +581,7 @@ class TpmClient:
 
         """
         if self.ak_handle is None:
-            raise RuntimeError("no AK; call provision_ak() first")
+            raise RuntimeError("no AK; call provision_ak() or load_ak() first")
         if isinstance(nonce, str):
             nonce = nonce.encode()
 
@@ -437,7 +590,10 @@ class TpmClient:
             pcr_selection,  # pcr_select (str -> TPML_PCR_SELECTION)
             bytes(nonce),  # qualifying_data (the nonce)
         )
-        return self.parse_quote(quoted, signature)
+        result = self.parse_quote(quoted, signature)
+        if include_pcr_values:
+            result = replace(result, pcr_values=_read_pcr_values_raw(self.ectx, pcr_selection))
+        return result
 
     @staticmethod
     def parse_quote(quoted: TPM2B_ATTEST, signature: TPMT_SIGNATURE) -> QuoteResult:
@@ -482,6 +638,81 @@ class TpmClient:
             sig_alg=sig_alg,
             sig_hash=sig_hash,
             sig_value=sig_value,
+        )
+
+    def certify(
+        self,
+        subject_key_pem_path: str,
+        nonce: Union[bytes, str],
+    ) -> CertifyResult:
+        """Run ``TPM2_Certify`` over a TSS2-wrapped subject key and return the parsed result.
+
+        ``subject_key_pem_path`` is a "TSS2 PRIVATE KEY" PEM (as written by the
+        tpm2-openssl provider): it names the key's persistent parent handle plus
+        the wrapped public/private blobs (see :func:`_read_tss2_private_key_pem`).
+        The subject key is loaded transiently under that parent, certified with
+        the AK (:meth:`provision_ak` or :meth:`load_ak` must have run first),
+        then flushed — the AK itself stays resident, matching the retired C
+        ``tpm_ops.c`` (parent/AK persistent, only the subject transient).
+
+        Parameters
+        ----------
+        subject_key_pem_path:
+            Path to the subject key's "TSS2 PRIVATE KEY" PEM.
+        nonce:
+            The verifier's qualifyingData, covered by the signature.
+
+        Notes
+        -----
+        ``in_scheme`` is left at ``TPM_ALG_NULL`` for the same reason as
+        :meth:`quote`: the AK is a restricted signing key, so the TPM enforces
+        its own scheme.
+
+        """
+        if self.ak_handle is None:
+            raise RuntimeError("no AK; call provision_ak() or load_ak() first")
+        if isinstance(nonce, str):
+            nonce = nonce.encode()
+
+        parent_handle, subject_public, subject_private = _read_tss2_private_key_pem(
+            subject_key_pem_path
+        )
+        parent_tr = self.ectx.tr_from_tpmpublic(parent_handle)
+        subject_tr = self.ectx.load(parent_tr, subject_private, subject_public)
+        try:
+            attest, signature = self.ectx.certify(
+                subject_tr,  # object_handle (the key being certified)
+                self.ak_handle,  # sign_handle (AK)
+                bytes(nonce),  # qualifying_data (the nonce)
+                TPMT_SIG_SCHEME(scheme=TPM2_ALG.NULL),
+            )
+        finally:
+            self.ectx.flush_context(subject_tr)
+
+        return self.parse_certify(attest, signature, subject_public)
+
+    @staticmethod
+    def parse_certify(
+        attest: TPM2B_ATTEST,
+        signature: TPMT_SIGNATURE,
+        subject_public: TPM2B_PUBLIC,
+    ) -> CertifyResult:
+        """Decode a ``(TPM2B_ATTEST, TPMT_SIGNATURE)`` certify pair into a CertifyResult.
+
+        The header fields come from the same
+        :func:`~libattest.formats.tpm.tpms_attest.parse_tpms_attest` :meth:`quote`
+        uses; only the (empty, for certify) PCR fields are dropped and the
+        subject's marshalled ``TPMT_PUBLIC`` is attached instead.
+        """
+        parsed = parse_tpms_attest(bytes(attest))
+        return CertifyResult(
+            quoted=attest,
+            signature=signature,
+            magic=parsed.magic,
+            attest_type=parsed.attest_type,
+            nonce=parsed.nonce,
+            qualified_signer=parsed.qualified_signer,
+            tpmt_public=bytes(subject_public.publicArea.marshal()),
         )
 
     # -- credential activation (binds the AK to the EK) -------------------- #
@@ -573,6 +804,7 @@ class TpmClient:
 __all__ = [
     "TPM_GENERATED_VALUE",
     "TPM_ST_ATTEST_QUOTE",
+    "CertifyResult",
     "QuoteResult",
     "TpmClient",
 ]
