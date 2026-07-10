@@ -22,6 +22,7 @@ HPKE-0 via :mod:`libattest.formats.jose_hpke` and ES256 JWS via
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from typing import Any
@@ -40,6 +41,20 @@ from libattest.verifier.base import AttestationVerifier
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCHEME_NAME = "ATG_PLUGIN"
+
+
+def _eat_nonce_bytes(b64: str) -> bytes:
+    """Decode an ``eat_nonce`` base64url string to raw bytes, tolerating padded or
+    unpadded input.  JWT/JOSE base64url is unpadded, but some producers (e.g. the ATG
+    evidence generator's ``base64.URLEncoding``) emit ``=`` padding; comparing on bytes
+    keeps the freshness check robust to either form and consistent with the software
+    py-verifier.  Returns ``b""`` on malformed input, which then fails the
+    ``== expected_nonce`` comparison.
+    """
+    try:
+        return base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
+    except (ValueError, TypeError):
+        return b""
 DEFAULT_REFERENCE_MOCK_CLAIM = "secure"
 _EAT_PROFILE = "tag:github.com,2023:veraison/ear"
 _TRUST_VECTOR_KEYS = (
@@ -185,7 +200,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
             logger.warning("evidence decode/decrypt failed: %s", exc)
             return VerifyResult.contraindicated(f"evidence decode/decrypt failed: {exc}")
 
-        if header.get("eat_nonce") != expected_b64u:                             # G4a
+        if _eat_nonce_bytes(header.get("eat_nonce", "")) != expected_nonce:       # G4a
             return VerifyResult.contraindicated("protected-header eat_nonce mismatch")
 
         try:                                                                     # G3
@@ -194,7 +209,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
             logger.warning("inner EAT-JWS verification failed: %s", exc)
             return VerifyResult.contraindicated(f"inner EAT-JWS verification failed: {exc}")
 
-        if claims.get("eat_nonce") != expected_b64u:                            # G4b
+        if _eat_nonce_bytes(claims.get("eat_nonce", "")) != expected_nonce:      # G4b
             return VerifyResult.contraindicated("inner eat_nonce mismatch")
 
         if claims.get("mock_claim") != self._reference_mock_claim:              # G5
