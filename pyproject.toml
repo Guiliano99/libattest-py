@@ -20,8 +20,19 @@ dependencies = [
     "cryptography>=49.0.0, <50.0.0",
     "PyJWT>=2.13.0",  # ES256 compact JWS sign/verify (jose_jws); ECDSA via the cryptography dep above
     "pydantic>=2.9",  # EAR (EAT Attestation Result) token model (libattest.ear)
-    "keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git",  # KeyAttestPoP sign/verify
+    "keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git",  # key generation helper (generate_key)
     "tpm2-pytss>=2.3.0",  # mandatory: ESAPI access + TPMS_ATTEST parsing
+    "pyhpke @ git+https://github.com/dajiaji/pyhpke.git@7b80aefc90b258ffe763e5b164205c8c689b7f24",
+    # Pinned to a commit on `main`, not the v3.2.0 tag/PyPI release (which
+    # maps to commit 02b8a69f, Sep 2025). main is 22 commits ahead as of
+    # this pin and includes COSE-HPKE Key Encryption mode algorithms
+    # (HPKE-*-KE, e.g. COSEAlgs.HPKE_0_KE) plus PSK test vectors that
+    # aren't in v3.2.0 yet.
+    #   commit: 29730487f4c23e9a0e2181c78e7b6337228d4c59
+    #   date:   2026-06-30
+    #   subject: "Allow newer cryptography and add Python 3.14 tox (#670)"
+    "cwt @ git+https://github.com/dajiaji/python-cwt.git@29730487f4c23e9a0e2181c78e7b6337228d4c59",
+
 ]
 
 [project.optional-dependencies]
