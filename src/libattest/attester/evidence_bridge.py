@@ -8,11 +8,16 @@ The whole point of this module is a single call surface a non-Python client
 (gencmpclient, embedding this via ``Py_Initialize``) can use without knowing
 any TPM or ASN.1 structure: :func:`generate_tpm_evidence` drives the TPM
 (``tpm2_pytss`` via :class:`~libattest.attester.tpm_client.TpmClient`), builds
-the ``TcgAttestQuote``/``TcgAttestCertify`` DER, and hands back
-``(evidence_der, type_oid)``. The caller wraps that pair in an
+the ``TcgAttestCertify``/``KeyAttestEvidence`` DER, and hands
+back ``(evidence_der, type_oid)``. (TPM2_Quote and TPM2_Certify evidence share
+the ``TcgAttestCertify`` wire shape; the outer OID distinguishes them.) The caller wraps that pair in an
 ``AttestationStatement``/``AttestationBundle`` — this module never sees that
 envelope, mirroring how ``atg_generate_evidence`` hands the software EAR/EAT
 path an opaque token plus its type OID.
+
+:func:`build_key_attest_chall` is the matching nonce-time one-shot: it reads the
+AK Name + EK public from the TPM and returns the ``KeyAttestChall`` DER the
+client sends in the CMP ``NonceRequest.reqInfo``.
 
 All parameters are positional-friendly (no keyword-only arguments) so the
 CPython C-API glue can call this with a plain argument tuple.
@@ -20,36 +25,68 @@ CPython C-API glue can call this with a plain argument tuple.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, Union
+import hashlib
+from pathlib import Path
 
+import cbor2
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cwt import COSE, COSEAlgs, COSEHeaders, COSEKey
 from pyasn1.codec.der import encoder as der_encoder
 
 from libattest.attester.tpm_client import TpmClient
+from libattest.formats import cwt_utils
+from libattest.formats.key_attest_pop import (
+    decode_key_attest_resp,
+    encode_to_der,
+    prepare_key_attest_chall,
+    prepare_key_attest_evidence,
+    resolve_key_attest_evidence_oid,
+)
 from libattest.formats.tpm.tcg import (
     id_tcg_attest_certify,
     id_tcg_attest_quote,
     prepare_tcg_attest_certify,
 )
 
-_KINDS = ("quote", "certify")
+_KINDS = ("quote", "certify", "key-attest")
+
+# AttestationStatement.type OID for COSE-HPKE-encrypted software evidence (draft-ietf-cose-hpke).
+# Distinct from the JOSE-HPKE evidence OID (libattest.formats.eareat_hpke.EVIDENCE_ENC_OID,
+# 1.3.6.1.4.1.99999.10) so the two wire formats never collide; matches gencmpclient's
+# ATG_COSE_HPKE_STMT_TYPE_OID (src/cmpClient.c).
+COSE_HPKE_STMT_TYPE_OID = "1.3.6.1.4.1.99999.20"
+
+
+def _corrupt_sig(signature_wire_bytes: bytes) -> bytes:
+    """Flip one signature-payload bit for the negative-test hook (offset 6)."""
+    if len(signature_wire_bytes) > 6:
+        corrupted = bytearray(signature_wire_bytes)
+        corrupted[6] ^= 0x01
+        return bytes(corrupted)
+    return signature_wire_bytes
 
 
 def generate_tpm_evidence(
     kind: str,
-    nonce: Union[bytes, str],
+    nonce: bytes | str,
     tcti: str,
     ak_handle: int,
-    pcr_selection: Optional[str] = None,
-    subject_key_pem: Optional[str] = None,
+    pcr_selection: str | None = None,
+    subject_key_pem: str | None = None,
     corrupt_signature: bool = False,
-) -> Tuple[bytes, str]:
+    enc_seed: bytes | None = None,
+    enc_secret: bytes | None = None,
+) -> tuple[bytes, str]:
     """Drive the TPM and return ``(evidence_der, type_oid)`` for one evidence kind.
 
     Parameters
     ----------
     kind:
-        ``"quote"`` (``TPM2_Quote`` over PCRs) or ``"certify"`` (``TPM2_Certify``
-        of a subject key). Selects both the TPM operation and the returned OID.
+        ``"quote"`` (``TPM2_Quote`` over PCRs), ``"certify"`` (``TPM2_Certify`` of
+        a subject key → ``TcgAttestCertify``), or ``"key-attest"`` (v5
+        credential-activation → ``KeyAttestEvidence``). Selects both the TPM
+        operation and the returned OID.
     nonce:
         The verifier's freshness nonce (qualifyingData).
     tcti:
@@ -59,29 +96,25 @@ def generate_tpm_evidence(
         Never re-provisioned here — see :meth:`TpmClient.load_ak`.
     pcr_selection:
         ``kind="quote"`` only. tpm2-tools-style ``"bank:idx,idx,..."``. When
-        omitted, falls back to :meth:`TpmClient.quote`'s own default
-        (``"sha256:0,1,2,3,4"``) — the caller only needs to pass this when the
-        verifier selected specific PCRs.
+        omitted, falls back to :meth:`TpmClient.quote`'s own default.
     subject_key_pem:
-        Required for ``kind="certify"``. Path to the subject key's "TSS2
-        PRIVATE KEY" PEM (the key being certified — must be the same TPM key
-        backing the CSR).
+        Required for ``kind="certify"`` and ``kind="key-attest"``. Path to the
+        subject key's "TSS2 PRIVATE KEY" PEM (the key being certified — must be
+        the same TPM key backing the CSR).
     corrupt_signature:
         Negative-test hook only — never set outside a negative-test run. Flips
-        one bit of the first signature-payload byte (wire-format offset 6,
-        common to RSASSA/RSAPSS/ECDSA — the 6-byte sigAlg/hashAlg/size header
-        precedes it) so the verifier's AK-signature check rejects. This used
-        to be applied by gencmpclient's C caller directly on the raw signature
-        buffer; now that the DER this function returns is opaque to the
-        caller (by design — see the module docstring), only this function
-        still has structured access to flip that byte, so the hook moved here.
+        one bit of the AK signature so the verifier's AK-signature check rejects.
+    enc_seed, enc_secret:
+        Required for ``kind="key-attest"``. The marshalled MakeCredential blobs
+        recovered from the Verifier's ``KeyAttestResp`` (``encSeed`` =
+        ``TPM2B_ENCRYPTED_SECRET``, ``encSecret`` = ``TPM2B_ID_OBJECT``).
 
     Returns
     -------
     tuple[bytes, str]
-        ``(evidence_der, type_oid)`` — the DER-encoded ``TcgAttestQuote`` /
-        ``TcgAttestCertify`` statement and its ``AttestationStatement.type`` OID
-        (dotted-decimal). The caller treats ``evidence_der`` as opaque.
+        ``(evidence_der, type_oid)`` — the DER-encoded statement and its
+        ``AttestationStatement.type`` OID (dotted-decimal). The caller treats
+        ``evidence_der`` as opaque.
 
     Raises
     ------
@@ -93,6 +126,18 @@ def generate_tpm_evidence(
         raise ValueError(f"unknown kind {kind!r}; expected one of {_KINDS}")
     if kind == "certify" and not subject_key_pem:
         raise ValueError("kind='certify' requires subject_key_pem")
+    if kind == "key-attest":
+        # Explicit per-arg guards (not a loop) so the type checker narrows each
+        # to non-None for the call below — no assert crutch needed.
+        if not subject_key_pem:
+            raise ValueError("kind='key-attest' requires subject_key_pem")
+        if not enc_seed:
+            raise ValueError("kind='key-attest' requires enc_seed")
+        if not enc_secret:
+            raise ValueError("kind='key-attest' requires enc_secret")
+        return _generate_key_attest_evidence(
+            nonce, tcti, ak_handle, subject_key_pem, enc_seed, enc_secret, corrupt_signature
+        )
 
     with TpmClient(tcti=tcti) as tpm:
         tpm.load_ak(ak_handle)
@@ -108,10 +153,8 @@ def generate_tpm_evidence(
             type_oid = id_tcg_attest_certify
 
     signature_wire_bytes = result.signature_wire_bytes
-    if corrupt_signature and len(signature_wire_bytes) > 6:
-        corrupted = bytearray(signature_wire_bytes)
-        corrupted[6] ^= 0x01
-        signature_wire_bytes = bytes(corrupted)
+    if corrupt_signature:
+        signature_wire_bytes = _corrupt_sig(signature_wire_bytes)
 
     statement = prepare_tcg_attest_certify(
         tpm_s_attest=result.attestation_bytes,
@@ -121,4 +164,164 @@ def generate_tpm_evidence(
     return der_encoder.encode(statement), str(type_oid)
 
 
-__all__ = ["generate_tpm_evidence"]
+def _generate_key_attest_evidence(
+    nonce: bytes | str,
+    tcti: str,
+    ak_handle: int,
+    subject_key_pem: str,
+    enc_seed: bytes,
+    enc_secret: bytes,
+    corrupt_signature: bool,
+) -> tuple[bytes, str]:
+    """Build a ``KeyAttestEvidence`` statement (credential-activation PoP flow).
+
+    The PoP ``sign(H(seed))`` needs the subject key still resident, so the whole
+    statement is assembled inside the TPM session (certify keeps the subject
+    loaded; ``close()`` flushes it on exit).
+    """
+    with TpmClient(tcti=tcti) as tpm:
+        tpm.load_ak(ak_handle)
+        tpm.provision_ek()  # deterministic EK primary; recreates the EK the chall advertised
+        seed = tpm.recover_seed(enc_secret=enc_secret, enc_seed=enc_seed)
+        result = tpm.certify(subject_key_pem, nonce, keep_subject_loaded=True)
+        pop_signature = bytes(tpm.sign(hashlib.sha256(seed).digest()).marshal())
+        ak_signature = result.signature_wire_bytes
+
+    if corrupt_signature:
+        ak_signature = _corrupt_sig(ak_signature)
+
+    evidence = prepare_key_attest_evidence(
+        tcg_certify_info=result.attestation_bytes,
+        tpm_signature=ak_signature,
+        tpm_tpublic=result.tpmt_public,
+        key_attest_signature=pop_signature,
+    )
+    return encode_to_der(evidence), resolve_key_attest_evidence_oid()
+
+
+def build_key_attest_chall(tcti: str, ak_handle: int, ek_cert_chain: str) -> bytes:
+    """Return the ``KeyAttestChall`` DER for the CMP ``NonceRequest.reqInfo``.
+
+    Reads the AK Name and the (deterministic) EK public from the TPM and pairs
+    them with the client's EK certificate chain.  The Verifier uses ``ekPublic``
+    to run ``TPM2_MakeCredential`` and ``akName`` as the bound Name.
+
+    ``ek_cert_chain`` is either inline PEM or a path to a PEM file — the gencmpclient
+    ``-ekCertChain`` flag passes a path.
+    """
+    # ponytail: accept a PEM path or inline PEM so the C bridge can pass a path.
+    pem = ek_cert_chain if "-----BEGIN" in ek_cert_chain else Path(ek_cert_chain).read_text()
+    with TpmClient(tcti=tcti) as tpm:
+        tpm.load_ak(ak_handle)
+        tpm.provision_ek()
+        ak_name = bytes(tpm.ak_name)
+        ek_public = bytes(tpm.ek_public.marshal())
+
+    chall = prepare_key_attest_chall(ak_name=ak_name, ek_public=ek_public, ek_cert_chain_pem=pem)
+    return encode_to_der(chall)
+
+
+def generate_key_attest_evidence(
+    nonce: bytes | str,
+    tcti: str,
+    ak_handle: int,
+    subject_key_pem: str,
+    key_attest_resp_der: bytes,
+    corrupt_signature: bool = False,
+) -> tuple[bytes, str]:
+    """Evidence-time one-shot for the gencmpclient key-attest bridge.
+
+    Decodes the ``KeyAttestResp`` (the CA's ``NonceResponse.respInfo``, carrying the
+    MakeCredential blobs) and drives the ``"key-attest"`` evidence generation —
+    keeping the C client free of the ``KeyAttestResp`` ASN.1.  Returns
+    ``(evidence_der, type_oid)``.
+    """
+    resp = decode_key_attest_resp(bytes(key_attest_resp_der))
+    return generate_tpm_evidence(
+        "key-attest",
+        nonce,
+        tcti,
+        ak_handle,
+        subject_key_pem=subject_key_pem,
+        corrupt_signature=corrupt_signature,
+        enc_seed=bytes(resp["encSeed"]),
+        enc_secret=bytes(resp["encSecret"]),
+    )
+
+
+def _ec_priv_to_cose_key(key: ec.EllipticCurvePrivateKey, kid: str) -> COSEKey:
+    """Adapt a ``cryptography`` EC private key to a ``COSEKey`` (via PEM; no direct API)."""
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    return COSEKey.from_pem(pem, kid=kid)
+
+
+def _ec_pub_to_cose_key(key: ec.EllipticCurvePublicKey, kid: str) -> COSEKey:
+    """Adapt a ``cryptography`` EC public key to a ``COSEKey`` (via PEM; no direct API)."""
+    pem = key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return COSEKey.from_pem(pem, kid=kid)
+
+
+def seal_cose_hpke_evidence(
+    ear_jwt: bytes,
+    recipient_pub_key: ec.EllipticCurvePublicKey,
+    signing_key: ec.EllipticCurvePrivateKey | None = None,
+) -> bytes:
+    """COSE-HPKE-0 encrypt an EAT/EAR JWT for the verifier (draft-ietf-cose-hpke).
+
+    The JWT is decoded (its JWS signature is *not* verified -- the static/local token is
+    already trusted), its claims mapped to CWT claim names where they differ (``jti``->
+    ``cti``, RFC 8392 S3.1) and CBOR-encoded, then sealed with integrated COSE-HPKE-0
+    (DHKEM(P-256)+HKDF-SHA256+AES-128-GCM) to *recipient_pub_key*. If *signing_key* is
+    given, the claims are first wrapped in a ``COSE_Sign1`` (nested sign-then-encrypt),
+    signed under the key's own EC alg; if ``None``, the claims are encrypted directly
+    (RFC 8392 Appendix A.5 encrypted CWT, no signature).
+
+    Signing goes through :meth:`~cwt.COSE.encode_and_sign` over the raw CBOR claims (not
+    the ``cwt.encode`` convenience wrapper): ``cwt.encode`` silently drops any claim
+    outside its built-in registry and auto-stamps exp/nbf/iat, which would lose
+    ``eat_nonce`` -- the freshness binding this evidence exists to protect. Signing the
+    opaque claims bytes preserves every claim.
+
+    Returns the bare ``COSE_Encrypt0`` bytes (no CMW/OID/bundle wrapping).
+
+    :raises ValueError: if *recipient_pub_key* is not an EC P-256 key (HPKE-0's KEM).
+    """
+    if not isinstance(recipient_pub_key.curve, ec.SECP256R1):
+        raise ValueError("COSE-HPKE-0 requires an EC P-256 recipient key")
+    claims = cwt_utils.jwt_to_cwt_claims(ear_jwt.decode("ascii"))
+    payload = cbor2.dumps(claims)
+    recipient_key = _ec_pub_to_cose_key(recipient_pub_key, kid="cose-hpke-recipient")
+    if signing_key is not None:
+        signer_key = _ec_priv_to_cose_key(signing_key, kid="cose-hpke-signer")
+        payload = COSE.new().encode_and_sign(payload, signer_key, protected={COSEHeaders.ALG: signer_key.alg})
+    return COSE.new().encode_and_encrypt(payload, recipient_key, protected={COSEHeaders.ALG: COSEAlgs.HPKE_0})
+
+
+def open_cose_hpke_evidence(
+    encrypted: bytes,
+    recipient_priv_key: ec.EllipticCurvePrivateKey,
+    verify_key: ec.EllipticCurvePublicKey | None = None,
+) -> dict:
+    """Open a :func:`seal_cose_hpke_evidence` result and return the CWT claims map.
+
+    *verify_key* must match whether *encrypted* was sealed with a *signing_key*: pass it
+    to verify the inner ``COSE_Sign1``, or omit it for the encrypt-only (unsigned) form.
+    """
+    recipient_key = _ec_priv_to_cose_key(recipient_priv_key, kid="cose-hpke-recipient")
+    payload = COSE.new().decode(encrypted, recipient_key)
+    if verify_key is not None:
+        signer_key = _ec_pub_to_cose_key(verify_key, kid="cose-hpke-signer")
+        payload = COSE.new().decode(payload, signer_key)
+    return cbor2.loads(payload)
+
+
+__all__ = [
+    "COSE_HPKE_STMT_TYPE_OID",
+    "build_key_attest_chall",
+    "generate_key_attest_evidence",
+    "generate_tpm_evidence",
+    "open_cose_hpke_evidence",
+    "seal_cose_hpke_evidence",
+]

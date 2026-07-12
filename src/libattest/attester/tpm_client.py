@@ -20,7 +20,8 @@ touch the TPM:
   :class:`libattest.formats.tpm.tpms_attest.TpmQuoteSignatureEvidence`),
 * the CA and device halves of credential activation
   (``TPM2_MakeCredential`` / ``TPM2_ActivateCredential``) — the operations that
-  recover the verifier ``seed`` used by the v5 ``KeyAttestPoP`` flow.
+  recover the verifier ``seed`` used by the v5 credential-activation flow, plus
+  ``Esys_Sign`` of ``H(seed)`` for the key-attestation proof-of-possession.
 
 This client performs real ESAPI calls and therefore requires the mandatory
 ``tpm2-pytss`` package (and a built ``tpm2-tss``), which is imported at module
@@ -51,7 +52,9 @@ from tpm2_pytss import (
     ESYS_TR,
     TPM2_ALG,
     TPM2_RC,
+    TPM2_RH,
     TPM2_SE,
+    TPM2_ST,
     TPM2_SU,
     TPM2B_ATTEST,
     TPM2B_ENCRYPTED_SECRET,
@@ -63,6 +66,7 @@ from tpm2_pytss import (
     TPMT_PUBLIC,
     TPMT_SIG_SCHEME,
     TPMT_SIGNATURE,
+    TPMT_TK_HASHCHECK,
     TSS2_Exception,
 )
 
@@ -424,6 +428,11 @@ class TpmClient:
         self.ak_handle: Optional[ESYS_TR] = None
         self.ak_public: Optional[TPM2B_PUBLIC] = None
         self.ak_name: Optional[TPM2B_NAME] = None
+        # Transient subject key retained across certify()->sign() for the
+        # key-attestation PoP; flushed by close(). None unless
+        # certify(keep_subject_loaded=True) ran.
+        self.subject_handle: Optional[ESYS_TR] = None
+        self._subject_public: Optional[TPM2B_PUBLIC] = None
         # False for an AK loaded via load_ak() (a persistent handle we don't
         # own); close() must not flush it, mirroring tpm_ops.c never flushing
         # the AK's ESYS_TR (only the transient subject key is flushed).
@@ -464,7 +473,7 @@ class TpmClient:
         """
         if self._ectx is None:
             return
-        handles = [self.ek_handle]
+        handles = [self.subject_handle, self.ek_handle]
         if self._ak_owned:
             handles.append(self.ak_handle)
         for handle in handles:
@@ -473,6 +482,7 @@ class TpmClient:
                     self._ectx.flush_context(handle)
                 except TSS2_Exception:
                     pass
+        self.subject_handle = None
         self._ectx.close()
         self._ectx = None
 
@@ -644,6 +654,7 @@ class TpmClient:
         self,
         subject_key_pem_path: str,
         nonce: Union[bytes, str],
+        keep_subject_loaded: bool = False,
     ) -> CertifyResult:
         """Run ``TPM2_Certify`` over a TSS2-wrapped subject key and return the parsed result.
 
@@ -661,6 +672,12 @@ class TpmClient:
             Path to the subject key's "TSS2 PRIVATE KEY" PEM.
         nonce:
             The verifier's qualifyingData, covered by the signature.
+        keep_subject_loaded:
+            When True, the transient subject key is retained in
+            :attr:`subject_handle` (and its public in ``_subject_public``) so
+            :meth:`sign` can produce the key-attestation PoP over ``H(seed)``;
+            otherwise it is flushed immediately. ``close()`` flushes a retained
+            handle.
 
         Notes
         -----
@@ -686,7 +703,14 @@ class TpmClient:
                 bytes(nonce),  # qualifying_data (the nonce)
                 TPMT_SIG_SCHEME(scheme=TPM2_ALG.NULL),
             )
-        finally:
+        except Exception:
+            self.ectx.flush_context(subject_tr)
+            raise
+
+        if keep_subject_loaded:
+            self.subject_handle = subject_tr
+            self._subject_public = subject_public
+        else:
             self.ectx.flush_context(subject_tr)
 
         return self.parse_certify(attest, signature, subject_public)
@@ -739,9 +763,10 @@ class TpmClient:
 
         The EK's authorization is a policy (``PolicySecret`` bound to the
         endorsement hierarchy), so the EK handle has to be authorized with a
-        *policy* session rather than a password.  In the v5 ``KeyAttestResp``
-        profile the recovered bytes are the verifier ``seed`` the requested key
-        then signs into ``KeyAttestPoP``.
+        *policy* session rather than a password.  In the v5 credential-activation
+        profile the recovered bytes are the verifier ``seed`` the subject key then
+        signs (``H(seed)``) into ``KeyAttestEvidence.keyAttestSignature`` — see
+        :meth:`recover_seed` for the marshalled-blob wrapper and :meth:`sign`.
         """
         if self.ak_handle is None or self.ek_handle is None:
             raise RuntimeError("provision the EK and AK first")
@@ -778,6 +803,52 @@ class TpmClient:
             return bytes(recovered)
         finally:
             self.ectx.flush_context(ek_session)
+
+    def recover_seed(self, enc_secret: bytes, enc_seed: bytes) -> bytes:
+        """Recover the verifier ``seed`` from the marshalled MakeCredential blobs.
+
+        Thin wrapper over :meth:`activate_credential` for the ``KeyAttestResp``
+        wire form: ``enc_secret`` is a marshalled ``TPM2B_ID_OBJECT`` (the
+        credential blob) and ``enc_seed`` a marshalled ``TPM2B_ENCRYPTED_SECRET``
+        (the seed).  The field-name inversion is deliberate — it matches how the
+        verifier maps ``make_credential``'s ``(credblob, secret)`` return onto
+        ``(encSecret, encSeed)``.  Provision the EK and load the AK first.
+        """
+        credential_blob, _ = TPM2B_ID_OBJECT.unmarshal(enc_secret)
+        encrypted_secret, _ = TPM2B_ENCRYPTED_SECRET.unmarshal(enc_seed)
+        return self.activate_credential(credential_blob, encrypted_secret)
+
+    @staticmethod
+    def _subject_sig_scheme(public: TPM2B_PUBLIC) -> TPMT_SIG_SCHEME:
+        """Build a sha256 ``TPMT_SIG_SCHEME`` matching the subject key type."""
+        key_type = public.publicArea.type
+        if key_type == TPM2_ALG.RSA:
+            scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.RSASSA)
+        elif key_type == TPM2_ALG.ECC:
+            scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.ECDSA)
+        else:
+            raise ValueError(f"unsupported subject key type for signing: {int(key_type):#x}")
+        scheme.details.any.hashAlg = TPM2_ALG.SHA256
+        return scheme
+
+    def sign(self, digest: bytes, in_scheme: Optional[TPMT_SIG_SCHEME] = None) -> TPMT_SIGNATURE:
+        """Sign *digest* with the retained subject key and return a ``TPMT_SIGNATURE``.
+
+        Drives the key-attestation PoP: the caller passes ``H(seed)`` and gets a
+        self-describing ``TPMT_SIGNATURE`` (sigAlg + hashAlg + sig).  The subject
+        key is non-restricted and *digest* is externally computed, so a NULL
+        ``TPMT_TK_HASHCHECK`` validation ticket is used.  Requires :meth:`certify`
+        to have run with ``keep_subject_loaded=True``; when *in_scheme* is omitted
+        it is derived from the retained subject public.
+        """
+        if self.subject_handle is None:
+            raise RuntimeError("no loaded subject key; call certify(keep_subject_loaded=True) first")
+        if in_scheme is None:
+            if self._subject_public is None:
+                raise RuntimeError("no retained subject public; pass in_scheme explicitly")
+            in_scheme = self._subject_sig_scheme(self._subject_public)
+        validation = TPMT_TK_HASHCHECK(tag=TPM2_ST.HASHCHECK, hierarchy=TPM2_RH.NULL, digest=b"")
+        return self.ectx.sign(self.subject_handle, bytes(digest), in_scheme, validation)
 
     # -- small helpers ----------------------------------------------------- #
     def ak_public_pem(self) -> bytes:
