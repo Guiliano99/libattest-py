@@ -69,6 +69,12 @@ class NonceState:
         this slot (e.g. ``TPM20QuoteRespInfo``), or ``None`` when the type
         carries no respInfo.  Stored so the engine can forward it to the
         verifier.
+    session_id:
+        Verifier session identifier bound to this nonce, set only for the
+        key-attestation (credential-activation) profile: the verifier issues it
+        alongside the MakeCredential blobs, the RA binds ``tx_id → session_id``
+        here, and ``verify_bundle`` echoes it back so the verifier can find the
+        retained seed.  ``None`` for every other profile.
 
     """
 
@@ -81,6 +87,7 @@ class NonceState:
     consumed: bool = False
     consumed_at: float | None = None
     resp_info: bytes | None = None
+    session_id: str | None = None
 
 
 @dataclass
@@ -132,6 +139,7 @@ class NonceStore:
         statement_oid: str | None,
         *,
         resp_info: bytes | None = None,
+        session_id: str | None = None,
     ) -> NonceState:
         """Generate and store a fresh nonce for ``(tx_id, statement_oid)``.
 
@@ -150,6 +158,9 @@ class NonceStore:
         resp_info:
             Optional DER ``NonceResponse.respTypeInfo.respInfo`` to remember
             for this slot.
+        session_id:
+            Optional verifier session id to bind to this nonce (key-attestation
+            profile only); echoed back at ``verify_bundle`` time.
 
         Returns
         -------
@@ -175,6 +186,7 @@ class NonceStore:
                 created_at=now,
                 expires_at=now + self._ttl,
                 resp_info=resp_info,
+                session_id=session_id,
             )
             tx.nonces[(statement_oid, instance)] = state
             logger.info(

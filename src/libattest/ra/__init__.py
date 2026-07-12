@@ -35,6 +35,7 @@ from libattest.ra.profile import (
     ID_TCG_ATTEST_QUOTE,
     AttestationProfile,
     jwt_profile,
+    key_attest_profile,
     tpm_profile,
 )
 from libattest.ra.registry import ProfileRegistry, ServiceRegistry
@@ -56,5 +57,6 @@ __all__ = [
     "ServiceRegistry",
     "VeraisonVerifierClient",
     "jwt_profile",
+    "key_attest_profile",
     "tpm_profile",
 ]

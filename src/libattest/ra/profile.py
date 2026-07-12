@@ -119,6 +119,13 @@ class AttestationProfile:
     reference_handler:
         Optional :class:`VerifierReferenceHandler` consulted by the engine
         after a verifier verdict (``None`` to skip the reference check).
+    build_challenge:
+        Optional ``(reqInfo DER | None, verifier) -> (respInfo DER | None,
+        session_id | None)``.  When set, :meth:`RemoteAttestationEngine.issue_nonce`
+        calls this **instead of** ``parse_req_info`` / ``build_resp_info`` to
+        produce the respInfo via a verifier round-trip (the key-attestation
+        MakeCredential leg) and bind the returned session id to the nonce.
+        ``None`` for stateless profiles (quote / jwt).
 
     """
 
@@ -135,6 +142,9 @@ class AttestationProfile:
     verifier: AttestationVerifier | None = None
     verifier_url: str | None = None
     reference_handler: VerifierReferenceHandler | None = None
+    build_challenge: (
+        Callable[[bytes | None, AttestationVerifier], tuple[bytes | None, str | None]] | None
+    ) = None
 
     def __post_init__(self) -> None:
         """Validate that a verifier is reachable (instance or URL)."""
@@ -276,11 +286,78 @@ def jwt_profile(
     )
 
 
+def key_attest_profile(
+    *,
+    request_type_oid: str,
+    statement_oid: str,
+    verifier: AttestationVerifier | None = None,
+    verifier_url: str | None = None,
+    reference_handler: VerifierReferenceHandler | None = None,
+    ear_oid: str = DEFAULT_EAR_EXT_OID,
+    resp_info_label: str = "KeyAttestResp",
+) -> AttestationProfile:
+    """Build an :class:`AttestationProfile` for v5 TPM key attestation (credential activation).
+
+    Unlike :func:`tpm_profile` / :func:`jwt_profile`, the respInfo is not a pure
+    function of the client's reqInfo — it is produced by a *verifier round-trip*.
+    The ``build_challenge`` hook decodes the client ``KeyAttestChall``, asks the
+    verifier to run software ``TPM2_MakeCredential`` (via
+    :meth:`VeraisonVerifierClient.make_credential`), and returns
+    ``(KeyAttestResp DER, sessionId)``; the engine binds that session id to the
+    nonce and embeds the ``KeyAttestResp`` in ``NonceResponse.respInfo``.
+
+    ``build_resp_info`` / ``resp_info_to_json`` are inert stubs here (respInfo
+    comes from ``build_challenge``, and it is carried as ASN.1 to the client, not
+    forwarded as JSON to the verifier).  Registered under BOTH ``request_type_oid``
+    and ``statement_oid`` by the caller, mirroring the certify block it replaces.
+
+    The ASN.1 adapters are imported at call time so importing :mod:`libattest.ra`
+    never pulls the key-attest format module.
+    """
+    from libattest.formats.key_attest_pop import (  # noqa: PLC0415
+        key_attest_chall_to_json,
+        key_attest_resp_from_json,
+    )
+
+    def build_challenge(
+        req_info: bytes | None,
+        challenge_verifier: AttestationVerifier,
+    ) -> tuple[bytes | None, str | None]:
+        if not req_info:
+            raise ValueError("key-attest NonceRequest carries no KeyAttestChall reqInfo")
+        make_credential = getattr(challenge_verifier, "make_credential", None)
+        if make_credential is None:
+            raise TypeError(
+                f"key-attest verifier {type(challenge_verifier).__name__} has no make_credential()"
+            )
+        chall = key_attest_chall_to_json(bytes(req_info))
+        result = make_credential(
+            ak_name=chall["akName"],
+            ek_public=chall["ekPublic"],
+            ek_cert_chain_pem=chall["ekCertChain"],
+        )
+        return key_attest_resp_from_json(result), result.get("sessionId")
+
+    return AttestationProfile(
+        request_type_oid=request_type_oid,
+        statement_oid=statement_oid,
+        build_resp_info=lambda _proposed: None,  # respInfo is produced by build_challenge
+        resp_info_to_json=lambda _der: {},  # respInfo is not forwarded to the verifier as JSON
+        resp_info_label=resp_info_label,
+        build_challenge=build_challenge,
+        encode_ear_extension=_default_encode_ear_extension(ear_oid),
+        verifier=verifier,
+        verifier_url=verifier_url,
+        reference_handler=reference_handler,
+    )
+
+
 __all__ = [
     "DEFAULT_EAR_EXT_OID",
     "ID_TCG_ATTEST_CERTIFY",
     "ID_TCG_ATTEST_QUOTE",
     "AttestationProfile",
     "jwt_profile",
+    "key_attest_profile",
     "tpm_profile",
 ]

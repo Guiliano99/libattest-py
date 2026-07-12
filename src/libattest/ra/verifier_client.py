@@ -34,6 +34,7 @@ import logging
 import os
 
 import requests
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from libattest.ear import ear_is_affirming, verify_ear_jwt
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SUBMIT_PATH = os.environ.get("VERIFIER_SUBMIT_PATH") or "/submitEvidenceCMP"
 DEFAULT_EAR_KEY_PATH = "/ear-verification-key"
+DEFAULT_MAKECRED_PATH = os.environ.get("VERIFIER_MAKECRED_PATH") or "/makeCredential"
 
 _LOG_PAYLOAD = (os.environ.get("VERIFIER_LOG_PAYLOAD") or "").strip().lower() in (
     "1",
@@ -136,6 +138,9 @@ class VeraisonVerifierClient(AttestationVerifier):
         evidence: bytes,
         evidence_oid: str | None = None,
         resp_info_json: dict | None = None,
+        *,
+        session_id: str | None = None,
+        pubkey: bytes | None = None,
     ) -> str | None:
         """POST ``(nonce, evidence)`` to ``{base_url}{submit_path}``.
 
@@ -155,6 +160,13 @@ class VeraisonVerifierClient(AttestationVerifier):
             base64/DER), forwarded so the verifier can confirm negotiated
             parameters (e.g. the requested PCR set + hash algorithm for the TPM
             profile).
+        session_id:
+            Optional verifier session id (key-attestation profile only); echoed
+            so the verifier can find the retained activation seed.
+        pubkey:
+            Optional to-be-certified SubjectPublicKeyInfo DER (key-attestation
+            profile only, base64-encoded on the wire); the verifier matches it
+            against the certified TPM key.
 
         Returns
         -------
@@ -173,6 +185,10 @@ class VeraisonVerifierClient(AttestationVerifier):
             body["oid"] = evidence_oid
         if resp_info_json is not None:
             body["resp_info_json"] = resp_info_json
+        if session_id is not None:
+            body["sessionId"] = session_id
+        if pubkey is not None:
+            body["pubkey"] = base64.b64encode(pubkey).decode("ascii")
 
         logger.info(
             "VeraisonVerifierClient.submit_evidence: POST %s (oid=%s, evidence=%dB, nonce=%dB%s)",
@@ -193,7 +209,7 @@ class VeraisonVerifierClient(AttestationVerifier):
                 verify=self.tls_verify,
                 headers={"Accept": "application/json"},
             )
-        except Exception as exc:  # noqa: BLE001
+        except requests.RequestException as exc:
             logger.error("VeraisonVerifierClient: HTTP error to %s: %s", url, exc)
             return None
 
@@ -234,6 +250,80 @@ class VeraisonVerifierClient(AttestationVerifier):
 
         return ear_jwt
 
+    # ── /makeCredential (key-attestation challenge) ────────────────────────────
+
+    def make_credential(
+        self,
+        ak_name: str,
+        ek_public: str,
+        ek_cert_chain_pem: str,
+        *,
+        path: str = DEFAULT_MAKECRED_PATH,
+    ) -> dict:
+        """POST a decomposed ``KeyAttestChall`` and return the verifier's reply.
+
+        Runs the verifier's software ``TPM2_MakeCredential`` (the key-attestation
+        nonce leg).  Unlike :meth:`submit_evidence`, this is **fail-loud**: the
+        challenge is mandatory to the flow, so a transport/JSON error raises
+        rather than returning a soft ``None`` (there is no verdict to degrade to).
+
+        Parameters
+        ----------
+        ak_name, ek_public:
+            Hex-encoded AK Name and marshalled EK ``TPM2B_PUBLIC`` from the client
+            ``KeyAttestChall`` (decoded by the RA adapter).
+        ek_cert_chain_pem:
+            The client EK certificate chain (PEM) — registration context.
+        path:
+            Endpoint path appended to the base URL (default ``/makeCredential``).
+
+        Returns
+        -------
+        dict
+            The verifier reply ``{sessionId, encSeed, encSecret}``.
+
+        Raises
+        ------
+        requests.RequestException
+            On any HTTP transport error or non-2xx status.
+        ValueError
+            When the reply is not JSON or is missing a required field.
+
+        """
+        url = f"{self.base_url}{path}"
+        body = {"akName": ak_name, "ekPublic": ek_public, "ekCertChain": ek_cert_chain_pem}
+        logger.info(
+            "VeraisonVerifierClient.make_credential: POST %s (akName=%d hex chars, ekPublic=%d hex chars)",
+            url,
+            len(ak_name),
+            len(ek_public),
+        )
+        if _LOG_PAYLOAD:
+            logger.info("VeraisonVerifierClient.make_credential: JSON body to %s: %s", url, json.dumps(body))
+
+        resp = requests.post(
+            url,
+            json=body,
+            timeout=self.fetch_timeout,
+            verify=self.tls_verify,
+            headers={"Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise ValueError(f"make_credential: non-JSON reply from {url}: {exc}") from exc
+        for field_name in ("sessionId", "encSeed", "encSecret"):
+            if field_name not in data:
+                raise ValueError(f"make_credential reply from {url} missing '{field_name}'")
+        logger.info(
+            "VeraisonVerifierClient.make_credential: sessionId=%s encSeed=%d hex chars encSecret=%d hex chars",
+            data["sessionId"],
+            len(data["encSeed"]),
+            len(data["encSecret"]),
+        )
+        return data
+
     # ── /ear-verification-key (cached) ─────────────────────────────────────────
 
     def _fetch_ear_public_key(self) -> ec.EllipticCurvePublicKey | None:
@@ -253,13 +343,17 @@ class VeraisonVerifierClient(AttestationVerifier):
                 return None
             self._ear_public_key = key
             return key
-        except Exception as exc:  # noqa: BLE001
+        except (requests.RequestException, ValueError, UnsupportedAlgorithm) as exc:
+            # Transport error, un-decodable PEM, or an unsupported key type all
+            # mean we cannot authenticate the verdict -> fail closed (return None).
+            # A genuine programming bug (other exception types) is left to propagate.
             logger.warning("VeraisonVerifierClient: could not fetch EAR signing public key from %s: %s", url, exc)
             return None
 
 
 __all__ = [
     "DEFAULT_EAR_KEY_PATH",
+    "DEFAULT_MAKECRED_PATH",
     "DEFAULT_SUBMIT_PATH",
     "VeraisonVerifierClient",
 ]

@@ -141,23 +141,36 @@ class RemoteAttestationEngine:
         profile = self.profiles.by_request_type(request_type_oid)
         statement_oid: str | None
         resp_info: bytes | None = None
+        session_id: str | None = None
         if profile is not None:
             statement_oid = profile.statement_oid
-            proposed = profile.parse_req_info(req_info)
-            resp_info = profile.build_resp_info(proposed)
-            if resp_info is not None:
+            if profile.build_challenge is not None:
+                # Challenge profiles (key attestation) produce the respInfo via a
+                # verifier round-trip and bind a session id to the nonce.
+                resp_info, session_id = profile.build_challenge(req_info, profile.resolve_verifier())
                 logger.info(
-                    "RA engine: attaching %s respInfo for statement oid=%s (%dB)",
+                    "RA engine: %s challenge for statement oid=%s (sessionId=%s, respInfo=%dB)",
                     profile.resp_info_label,
                     statement_oid,
-                    len(resp_info),
+                    session_id,
+                    len(resp_info) if resp_info else 0,
                 )
+            else:
+                proposed = profile.parse_req_info(req_info)
+                resp_info = profile.build_resp_info(proposed)
+                if resp_info is not None:
+                    logger.info(
+                        "RA engine: attaching %s respInfo for statement oid=%s (%dB)",
+                        profile.resp_info_label,
+                        statement_oid,
+                        len(resp_info),
+                    )
         else:
             # No profile: store under the request type itself when present, else
             # positionally under None.
             statement_oid = str(request_type_oid) if request_type_oid else None
 
-        return self.nonce_store.issue(tx_id, statement_oid, resp_info=resp_info)
+        return self.nonce_store.issue(tx_id, statement_oid, resp_info=resp_info, session_id=session_id)
 
     # ── Phase 3: bundle verification ───────────────────────────────────────────
 
@@ -166,6 +179,7 @@ class RemoteAttestationEngine:
         bundle_der: bytes,
         tx_id: bytes,
         *,
+        pubkey: bytes | None = None,
         drop_transaction: bool = True,
     ) -> BundleVerifyOutcome:
         """Verify every statement in *bundle_der* and aggregate the verdicts.
@@ -188,6 +202,11 @@ class RemoteAttestationEngine:
             DER of the ``AttestationBundle``.
         tx_id:
             Transaction identifier whose nonces gate this bundle.
+        pubkey:
+            Optional to-be-certified SubjectPublicKeyInfo DER extracted from the
+            CMP carrier by the caller (not carried in the bundle).  Forwarded to
+            the default HTTP verifier for the key-attestation key-match/PoP checks;
+            ignored by quote/jwt profiles.
         drop_transaction:
             When ``True`` (default), the per-tx nonce state is dropped after
             verification (success or failure) so memory is freed and a retried
@@ -201,12 +220,14 @@ class RemoteAttestationEngine:
 
         """
         try:
-            return self._verify_bundle(bundle_der, tx_id)
+            return self._verify_bundle(bundle_der, tx_id, pubkey=pubkey)
         finally:
             if drop_transaction:
                 self.nonce_store.drop_transaction(tx_id)
 
-    def _verify_bundle(self, bundle_der: bytes, tx_id: bytes) -> BundleVerifyOutcome:
+    def _verify_bundle(
+        self, bundle_der: bytes, tx_id: bytes, *, pubkey: bytes | None = None
+    ) -> BundleVerifyOutcome:
         try:
             bundle = decode_attestation_bundle(bundle_der)
         except ValueError as exc:
@@ -266,7 +287,7 @@ class RemoteAttestationEngine:
                 continue
 
             # 3. Submit to the verifier.
-            verdict = self._submit(profile, nonce_state, stmt_oid, stmt_bytes, bundle_der)
+            verdict = self._submit(profile, nonce_state, stmt_oid, stmt_bytes, bundle_der, pubkey=pubkey)
 
             # 4. Optional reference-value check.
             if verdict.status == EarStatus.affirming and profile.reference_handler is not None:
@@ -297,6 +318,8 @@ class RemoteAttestationEngine:
         stmt_oid: str,
         stmt_bytes: bytes,
         bundle_der: bytes,
+        *,
+        pubkey: bytes | None = None,
     ) -> VerifyResult:
         """Submit one statement to its profile's verifier and return the verdict.
 
@@ -311,11 +334,20 @@ class RemoteAttestationEngine:
 
         if isinstance(verifier, VeraisonVerifierClient):
             resp_info_json = self._resp_info_json(profile, nonce_state.resp_info)
+            # Conditional kwargs: only the key-attestation profile sets a session
+            # id (on the nonce) or a pubkey, so quote/jwt submissions — and test
+            # doubles with the narrower signature — are unaffected.
+            extra: dict = {}
+            if nonce_state.session_id is not None:
+                extra["session_id"] = nonce_state.session_id
+            if pubkey is not None:
+                extra["pubkey"] = pubkey
             ear_jwt = verifier.submit_evidence(
                 nonce=nonce_state.nonce,
                 evidence=bundle_der,
                 evidence_oid=stmt_oid,
                 resp_info_json=resp_info_json,
+                **extra,
             )
             if ear_jwt is None:
                 return VerifyResult.contraindicated(
