@@ -100,7 +100,7 @@ A Relying-Party `KeyBindingPolicy` (draft §5.2/§6) then enforces, by default,
 ```bash
 # from the repo root, using the project venv
 .venv/bin/python prototypes/tpm_key_binding/demo.py            # software path, no TPM
-.venv/bin/python -m pytest prototypes/tpm_key_binding/ -q      # 8 offline checks
+.venv/bin/python -m pytest prototypes/tpm_key_binding/ -q      # 10 offline checks
 ```
 
 Real TPM (the [`docker/tpm-demo`](../../docker/tpm-demo) swtpm, or `/dev/tpmrm0`):
