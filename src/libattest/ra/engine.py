@@ -203,9 +203,9 @@ class RemoteAttestationEngine:
         tx_id:
             Transaction identifier whose nonces gate this bundle.
         pubkey:
-            Optional to-be-certified SubjectPublicKeyInfo DER extracted from the
-            CMP carrier by the caller (not carried in the bundle).  Forwarded to
-            the default HTTP verifier for the key-attestation key-match/PoP checks;
+            To-be-certified SubjectPublicKeyInfo DER extracted from the CMP carrier
+            by the caller (not carried in the bundle). Required for key-attestation
+            profiles so the verifier can bind the certified TPM key to the CSR key;
             ignored by quote/jwt profiles.
         drop_transaction:
             When ``True`` (default), the per-tx nonce state is dropped after
@@ -331,6 +331,11 @@ class RemoteAttestationEngine:
         """
         verifier: AttestationVerifier = profile.resolve_verifier()
         media_type = getattr(verifier, "media_type", "application/octet-stream")
+
+        if profile.build_challenge is not None and not pubkey:
+            return VerifyResult.contraindicated(
+                "key attestation requires the to-be-certified SubjectPublicKeyInfo"
+            )
 
         if isinstance(verifier, VeraisonVerifierClient):
             resp_info_json = self._resp_info_json(profile, nonce_state.resp_info)

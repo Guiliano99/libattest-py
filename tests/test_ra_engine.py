@@ -23,11 +23,13 @@ from libattest.ra import (
     RemoteAttestationEngine,
     ReplayError,
     jwt_profile,
+    key_attest_profile,
 )
 from libattest.testing.fakes import InMemoryVerifier
 from libattest.types import EarStatus, VerifyResult
 
 OID = "1.3.6.1.4.1.99999.1"
+KEY_ATTEST_OID = "1.3.6.1.4.1.99999.2"
 TX = b"\x01" * 16
 
 
@@ -96,6 +98,27 @@ def test_verify_bundle_contraindicated_when_verifier_rejects():
     assert failure is not None
     assert failure.status == EarStatus.contraindicated
     assert outcome.first_ear is None
+
+
+def test_key_attest_rejects_missing_subject_public_key_before_submission():
+    """Key attestation must not bypass the certified-TPM-key to CSR-key binding."""
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
+    profiles = ProfileRegistry()
+    profiles.register(
+        key_attest_profile(
+            request_type_oid=KEY_ATTEST_OID,
+            statement_oid=KEY_ATTEST_OID,
+            verifier=verifier,
+        )
+    )
+    engine = RemoteAttestationEngine(profiles)
+    engine.nonce_store.issue(TX, KEY_ATTEST_OID, session_id="key-attest-session")
+
+    outcome = engine.verify_bundle(_bundle(oid=KEY_ATTEST_OID), TX)
+
+    assert outcome.result.per_statement[0].status == EarStatus.contraindicated
+    assert "SubjectPublicKeyInfo" in outcome.result.per_statement[0].errors[0]
+    assert verifier.verify_calls == []
 
 
 def test_verify_bundle_unknown_when_no_nonce_issued():
