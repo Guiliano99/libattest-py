@@ -82,7 +82,7 @@ ENV PATH="/opt/venv/bin:${PATH}"
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir 'tpm2-pytss>=2.3.0' \
     && pip install --no-cache-dir \
-        pyasn1 pyasn1-alt-modules requests 'cryptography>=48.0.0,<49.0.0' pytest \
+        pyasn1 pyasn1-alt-modules requests 'cryptography>=48.0.0,<49.0.0' pytest PyJWT \
     && pip install --no-cache-dir 'keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git'
 
 # --- 3. runtime environment --------------------------------------------------

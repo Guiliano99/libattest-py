@@ -6,6 +6,13 @@
 
 from libattest.types import BundleVerifyResult, EarStatus, VerifyResult
 from libattest.verifier.base import AttestationVerifier
+from libattest.verifier.eat_appraisal import (
+    TrustAnchorError,
+    appraise_eat_jwt,
+    check_nonce_and_claim,
+    eat_nonce_bytes,
+    verify_eat_jwt,
+)
 from libattest.verifier.endpoints import (
     CORIM_MEDIA_TYPE,
     DEFAULT_PROVISIONING_PORT,
@@ -49,6 +56,7 @@ __all__ = [
     "ReferenceCheckResult",
     "SESSION_MEDIA_TYPE",
     "SESSION_PATH_TEMPLATE",
+    "TrustAnchorError",
     "VERIFICATION_BASE_PATH",
     "VerifierEndpointConfig",
     "VerifierReferenceHandler",
@@ -58,4 +66,8 @@ __all__ = [
     "VerifierRoutingPolicy",
     "VerifyResult",
     "WELL_KNOWN_VERIFICATION_PATH",
+    "appraise_eat_jwt",
+    "check_nonce_and_claim",
+    "eat_nonce_bytes",
+    "verify_eat_jwt",
 ]
