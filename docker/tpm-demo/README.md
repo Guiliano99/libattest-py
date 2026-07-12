@@ -10,6 +10,9 @@ The local libattest files are:
 - `docker/tpm-demo/Dockerfile.client`
 - `docker/tpm-demo/Dockerfile.tpmsim`
 - `docker/tpm-demo/demo.py`
+- `docker/tpm-demo/provision.sh` / `provision_ek.py` — device-side EK provisioning
+- `docker/tpm-demo/ek_http_verifier.py` — demo verifier HTTP surface (stdlib)
+- `docker/tpm-demo/ek_http_demo.py` — end-to-end EK-over-HTTP flow
 
 ## Build the images
 
@@ -72,7 +75,7 @@ docker compose -f docker/tpm-demo/docker-compose.yml run --rm demo
 This runs:
 
 ```bash
-python docker/tpm-demo/demo.py   # platform_attest_demo + key_attest_demo
+python docker/tpm-demo/demo.py   # platform + key + EK-over-HTTP demos
 ```
 
 Both demos perform **real** TPM operations via `tpm2-pytss`
@@ -81,22 +84,76 @@ Both demos perform **real** TPM operations via `tpm2-pytss`
 - the platform demo provisions an EK + AK, runs a real `TPM2_Quote`, and
   appraises it with `TpmPlatformVerifier` (signature + freshness + PCR digest);
 - the key-attestation demo runs `TPM2_MakeCredential`/`ActivateCredential` to
-  recover the verifier `seed`, then verifies the `KeyAttestPoP` signature over
-  that recovered seed with `TpmKeyAttestVerifier`.
+  recover the verifier `seed` and checks it equals the seed the verifier wrapped
+  for `(EK, AK Name)` — the credential-activation core of the v5 flow.
 
 They require `tpm2-pytss` and a reachable TPM, which the `client` image and the
 healthy `tpmsim` service provide.
 
-This Docker demo exercises the full key/platform attestation flow end to end.
-The verifier-side building blocks live in the TPM verifier classes:
+The platform demo runs end to end; the key demo exercises the credential-activation
+core (seed recovery). The verifier-side building blocks live in the verifier
+bridge + TPM verifier classes:
 
-- `TpmKeyAttestVerifier.build_activation_challenge()` creates the verifier side
-  of a TPM2_ActivateCredential challenge by generating/storing `seed` and
-  returning only `encSeed`/`encSecret` to the client.
-- `TpmKeyAttestVerifier.verify_activation_pop()` verifies the post-activation
-  `KeyAttestPoP` signature over the recovered `seed`.
+- `verify_bridge.make_credential_challenge()` (→ `TpmKeyAttestVerifier.make_challenge()`)
+  runs software `TPM2_MakeCredential`, generating/retaining `seed` and returning
+  only `encSeed`/`encSecret` to the client.
+- `verify_bridge.verify_key_attest()` (→ `TpmKeyAttestVerifier.verify()`) appraises
+  a `KeyAttestEvidence` statement (certify + name-binding + PoP-over-seed); the full
+  statement path needs a subject key + AK cert chain and is exercised by the
+  remote-attest-e2e docker stack, not this single-process demo.
 - `TpmPlatformVerifier.verify_quote_signature()` verifies TPM2_Quote freshness
   and the AK signature over the exact `TPMS_ATTEST` bytes.
+
+### EK-over-HTTP demo (`ek_http_demo.py`)
+
+The third demo splits the credential-activation core across a real HTTP boundary
+so you can see how a verifier obtains the endorsement-key public area. The key
+point: software `TPM2_MakeCredential` needs the EK's **whole** `TPM2B_PUBLIC`
+(its `nameAlg`, `objectAttributes` and the `parameters.symmetric` used for the
+outer wrap), **not** just the raw public key — and an X.509 EK certificate only
+carries the `SubjectPublicKeyInfo`. So the device submits *both*.
+
+Flow:
+
+1. **Device provisions the EK** (`provision.sh` → `provision_ek.py`) and writes
+   two artifacts:
+   - `ek_tpm2b_public_key.raw` — the marshalled `TPM2B_PUBLIC` (what
+     MakeCredential consumes);
+   - `ek_cert_chain.pem` — a demo EK certificate carrying the EK public key.
+2. **`POST /demo/ek/submit`** — the device sends `ek_cert_chain.pem` + the raw
+   bytes. The verifier (`EkStore`) unmarshals the `TPM2B_PUBLIC` via `tpm2-pytss`,
+   enforces the **bind check** (cert `SubjectPublicKeyInfo` == `TPM2B_PUBLIC` key),
+   and stores the public area keyed by the leaf cert's SHA-256 fingerprint
+   (`ek_id`).
+3. **`POST /demo/ek/challenge`** — the device sends `ek_id` + AK Name; the
+   verifier looks up the stored `TPM2B_PUBLIC`, runs software MakeCredential over
+   `(EK, AK Name)`, retains the `seed`, and returns only `encSeed`/`encSecret`.
+4. **Device runs `TPM2_ActivateCredential`** to recover the seed and
+   **`POST /demo/ek/verify-seed`** with `H(seed)`; only a TPM holding both the EK
+   and the named AK can produce it.
+
+> **Demo EK certificate caveat.** A genuine EK is decrypt-only and *cannot sign*,
+> and the IBM simulator ships no manufacturer EK certificate at its NV index. The
+> demo therefore mints a stand-in EK leaf signed by an ephemeral issuer key,
+> purely to have a valid X.509 structure. The verifier uses trust-on-first-submit
+> (TOFU): it does **not** validate the chain signature — it checks only that the
+> cert's key matches the `TPM2B_PUBLIC`. A real deployment would validate the leaf
+> against the TPM manufacturer's Endorsement CA before trusting the mapping. The
+> *key* provisioning is genuine TCG-correct; only the *cert* is synthesized.
+
+The reusable verifier logic lives in the library
+(`libattest.verifier.ek_store.EkStore`); `ek_http_verifier.py` is a thin stdlib
+`http.server` wrapper (the minimal client image ships no web framework). The
+client calls are `AttestClient.submit_ek()` /
+`request_credential_challenge()` / `report_seed()`.
+
+Run just this demo or its tests inside the client shell:
+
+```bash
+python docker/tpm-demo/ek_http_demo.py
+pytest docker/tpm-demo/test_ek_http_demo.py -q   # + the bind-check rejection test
+bash docker/tpm-demo/provision.sh ek-artifacts   # writes the two artifacts only
+```
 
 The demo package is isolated inside libattest-py; it does not require any
 external example repository at runtime.
@@ -127,7 +184,8 @@ Examples inside the client shell:
 ```bash
 python docker/tpm-demo/platform_attest_demo.py
 python docker/tpm-demo/key_attest_demo.py
-pytest docker/tpm-demo/test_demo.py -q
+python docker/tpm-demo/ek_http_demo.py
+pytest docker/tpm-demo/test_demo.py docker/tpm-demo/test_ek_http_demo.py -q
 pytest tests/test_tpm_pcr_selection_json.py tests/test_key_attest_v5.py -q
 ```
 

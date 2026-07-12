@@ -51,8 +51,10 @@ def test_platform_demo_accepts_real_quote(capsys):
     assert "Verdict:       ACCEPT" in capsys.readouterr().out
 
 
-def test_key_demo_accepts_real_activation_pop(capsys):
-    """The key demo recovers the seed and the KeyAttestPoP verifies."""
+def test_key_demo_recovers_activation_seed(capsys):
+    """The key demo recovers the verifier's seed via TPM2_ActivateCredential."""
     _require_tpm()
     assert key_attest_demo.run_demo(tcti=TCTI)
-    assert "Verdict:           ACCEPT" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "recovered == seed: True" in out
+    assert "ACCEPT" in out

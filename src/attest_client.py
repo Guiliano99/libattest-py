@@ -30,6 +30,8 @@ https://github.com/veraison/docs/tree/main/api/endorsement-provisioning
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -713,6 +715,62 @@ class AttestClient:
             timeout=self._cfg.timeout,
         )
         resp.raise_for_status()
+
+    # -----------------------------------------------------------------------
+    # EK endorsement — demo extension (docker/tpm-demo)
+    # -----------------------------------------------------------------------
+    #
+    # These three calls drive the credential-activation demo verifier
+    # (docker/tpm-demo/ek_http_verifier.py).  The device submits its EK cert
+    # chain together with the marshalled TPM2B_PUBLIC, then runs a MakeCredential
+    # challenge keyed by the returned ek_id.  They are not part of the Veraison
+    # REST surface — hence the dedicated /demo/ek/* paths.
+
+    def _demo_url(self, path: str) -> str:
+        cfg = self._cfg
+        return f"{cfg.scheme}://{cfg.host}:{cfg.verification_port}{path}"
+
+    def submit_ek(self, cert_chain_pem: bytes, tpm2b_public_raw: bytes) -> str:
+        """POST the EK cert chain + marshalled TPM2B_PUBLIC; return the ``ek_id``."""
+        resp = self._session.post(
+            self._demo_url("/demo/ek/submit"),
+            json={
+                "ek_cert_chain_pem": cert_chain_pem.decode("ascii"),
+                "ek_tpm2b_public_b64": base64.b64encode(tpm2b_public_raw).decode("ascii"),
+            },
+            timeout=self._cfg.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["ek_id"]
+
+    def request_credential_challenge(self, ek_id: str, ak_name: bytes) -> tuple[str, bytes, bytes]:
+        """Request a MakeCredential challenge for ``ek_id``/``ak_name``.
+
+        Returns ``(session_id, enc_secret, enc_seed)`` — the two blobs the device
+        feeds to ``TPM2_ActivateCredential``.  The seed stays on the verifier.
+        """
+        resp = self._session.post(
+            self._demo_url("/demo/ek/challenge"),
+            json={"ek_id": ek_id, "ak_name_b64": base64.b64encode(ak_name).decode("ascii")},
+            timeout=self._cfg.timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return (
+            body["session_id"],
+            base64.b64decode(body["enc_secret_b64"]),
+            base64.b64decode(body["enc_seed_b64"]),
+        )
+
+    def report_seed(self, session_id: str, seed: bytes) -> bool:
+        """Send ``H(seed)`` back to the verifier; return whether it matched."""
+        resp = self._session.post(
+            self._demo_url("/demo/ek/verify-seed"),
+            json={"session_id": session_id, "seed_sha256": hashlib.sha256(seed).hexdigest()},
+            timeout=self._cfg.timeout,
+        )
+        resp.raise_for_status()
+        return bool(resp.json()["accepted"])
 
     # -----------------------------------------------------------------------
     # Context manager
