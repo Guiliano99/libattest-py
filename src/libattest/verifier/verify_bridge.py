@@ -36,8 +36,8 @@ def verify_key_attest(
     seed: bytes,
     nonce: bytes,
     pubkey_pem: bytes,
-    ak_chain_pem,
-    trust_anchor,
+    ak_chain_pem: bytes | str,
+    trust_anchor: bytes | str,
 ) -> VerifyResult:
     """Appraise a ``KeyAttestEvidence`` statement against the retained seed + nonce.
 

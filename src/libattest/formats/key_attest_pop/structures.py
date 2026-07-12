@@ -2,109 +2,176 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ASN.1 OID + UTF8String-JSON structures for TPM key attestation.
+"""Typed ASN.1 structures for the v5 TPM key-attestation (credential-activation) flow.
 
-The v5 key-attestation nonce exchange keeps the outer CMP / ASN.1 layer simple
-for OpenSSL-based clients.  The type-specific request and response payloads are
-self-describing ASN.1 wrappers:
+Three self-contained DER SEQUENCEs carry the whole exchange — no CMW wrapper, no
+JSON-in-ASN.1::
 
-    KeyAttestChall ::= SEQUENCE { type OBJECT IDENTIFIER, value UTF8String }
-    KeyAttestResp  ::= SEQUENCE { type OBJECT IDENTIFIER, value UTF8String }
+    KeyAttestChall ::= SEQUENCE {          -- client → CA/RA (NonceRequest.reqInfo)
+        akName       OCTET STRING,         -- TPM Name of the AK
+        ekPublic     OCTET STRING,         -- marshalled TPM2B_PUBLIC of the EK
+        ekCertChain  SEQUENCE OF Certificate }
 
-``value`` contains deterministic JSON text.  The request JSON carries the AK /
-requested-key TPM Name and EK certificate chain.  The response JSON carries only
-``encSeed`` and ``encSecret``; the Verifier-generated ``seed`` is never sent to
-the client and is retained by the CA/RA for proof-of-possession verification.
+    KeyAttestResp ::= SEQUENCE {           -- CA/RA → client (NonceResponse.respInfo)
+        encSeed      OCTET STRING,         -- marshalled TPM2B_ENCRYPTED_SECRET
+        encSecret    OCTET STRING }        -- marshalled TPM2B_ID_OBJECT
 
-``KeyAttestPoP`` remains a normal ASN.1 X.509 extension value containing a
-signature over the recovered ``seed``.
+    KeyAttestEvidence ::= SEQUENCE {       -- client → CA/RA (AttestationStatement.stmt)
+        tcgCertifyInfo      OCTET STRING,  -- marshalled TPMS_ATTEST (TPM_ST_ATTEST_CERTIFY)
+        tpmSignature        OCTET STRING,  -- marshalled TPMT_SIGNATURE: AK over tcgCertifyInfo
+        tpmTPublic          OCTET STRING,  -- bare marshalled TPMT_PUBLIC of the subject key
+        keyAttestSignature  OCTET STRING } -- marshalled TPMT_SIGNATURE: subject key over H(seed)
+
+The Verifier-generated ``seed`` is NEVER carried here; it is retained by the
+Verifier for proof-of-possession verification.  ``encSeed``/``encSecret`` are the
+opaque MakeCredential blobs the client feeds to ``TPM2_ActivateCredential``.
+
+The ``*_to_json`` / ``*_from_json`` adapters are the single translation point the
+RA engine uses across the JSON-only MockCA↔Verifier hop; ``mock_ca/`` never parses
+these SEQUENCEs itself.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+import base64
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from pyasn1.codec.der import decoder as _der_decoder
 from pyasn1.codec.der import encoder as _der_encoder
 from pyasn1.type import namedtype, univ
-from pyasn1_alt_modules import rfc5280
+from pyasn1_alt_modules import rfc9480
 
-from libattest.formats._oid_json import (
-    OidUtf8Json,
-    decode_oid_json_value,
-    prepare_oid_json_value,
-    resolve_env_oid,
-)
+from libattest.formats._oid_json import resolve_env_oid
+from libattest.formats.csrattest.csr_attest_structures import pem_chain_to_cmp_certs
 
-KEY_ATTEST_POP_OID_ENV: str = "KEY_ATTEST_POP_OID"
-DEFAULT_KEY_ATTEST_POP_OID: str = "1.3.6.1.4.1.99999.2"
+KEY_ATTEST_EVIDENCE_OID_ENV: str = "KEY_ATTEST_EVIDENCE_OID"
+DEFAULT_KEY_ATTEST_EVIDENCE_OID: str = "1.3.6.1.4.1.99999.2"
 
-KEY_ATTEST_CHALL_OID_ENV: str = "KEY_ATTEST_CHALL_OID"
-DEFAULT_KEY_ATTEST_CHALL_OID: str = "1.3.6.1.4.1.99999.1.1"
-
-KEY_ATTEST_RESP_OID_ENV: str = "KEY_ATTEST_RESP_OID"
-DEFAULT_KEY_ATTEST_RESP_OID: str = "1.3.6.1.4.1.99999.1.2"
-
-ID_SHA256_WITH_RSA_ENCRYPTION: str = "1.2.840.113549.1.1.11"
-ID_ECDSA_WITH_SHA256: str = "1.2.840.10045.4.3.2"
+#: Default statement OID as dotted string / pyasn1 OID.  The RA profile resolves
+#: the effective OID via :func:`resolve_key_attest_evidence_oid` (env-overridable);
+#: these constants are the convenience default for routing tables.
+ID_KEY_ATTEST_EVIDENCE_DOTTED: str = DEFAULT_KEY_ATTEST_EVIDENCE_OID
+ID_KEY_ATTEST_EVIDENCE: univ.ObjectIdentifier = univ.ObjectIdentifier(DEFAULT_KEY_ATTEST_EVIDENCE_OID)
 
 
-def resolve_key_attest_pop_oid() -> str:
-    """Return the private extension OID for ``KeyAttestPoP``."""
-    return resolve_env_oid(KEY_ATTEST_POP_OID_ENV, DEFAULT_KEY_ATTEST_POP_OID)
+def resolve_key_attest_evidence_oid() -> str:
+    """Return the ``id-keyAttestEvidence`` statement OID (env-overridable)."""
+    return resolve_env_oid(KEY_ATTEST_EVIDENCE_OID_ENV, DEFAULT_KEY_ATTEST_EVIDENCE_OID)
 
 
-def resolve_key_attest_chall_oid() -> str:
-    """Return the JSON schema OID carried in ``KeyAttestChall.type``."""
-    return resolve_env_oid(KEY_ATTEST_CHALL_OID_ENV, DEFAULT_KEY_ATTEST_CHALL_OID)
+# ── typed ASN.1 structures ───────────────────────────────────────────────────
 
 
-def resolve_key_attest_resp_oid() -> str:
-    """Return the JSON schema OID carried in ``KeyAttestResp.type``."""
-    return resolve_env_oid(KEY_ATTEST_RESP_OID_ENV, DEFAULT_KEY_ATTEST_RESP_OID)
+class EkCertChain(univ.SequenceOf):
+    """``SEQUENCE OF Certificate`` — the EK certificate chain in a KeyAttestChall."""
+
+    componentType = rfc9480.CMPCertificate()
 
 
-class KeyAttestChall(OidUtf8Json):
-    """``KeyAttestChall ::= SEQUENCE { type OID, value UTF8String }``."""
-
-
-class KeyAttestResp(OidUtf8Json):
-    """``KeyAttestResp ::= SEQUENCE { type OID, value UTF8String }``."""
-
-
-class KeyAttestPoP(univ.Sequence):
-    """``KeyAttestPoP ::= SEQUENCE { signatureAlgorithm, signature }``."""
+class KeyAttestChall(univ.Sequence):
+    """``KeyAttestChall ::= SEQUENCE { akName, ekPublic, ekCertChain }``."""
 
     componentType = namedtype.NamedTypes(
-        namedtype.NamedType("signatureAlgorithm", rfc5280.AlgorithmIdentifier()),
-        namedtype.NamedType("signature", univ.BitString()),
+        namedtype.NamedType("akName", univ.OctetString()),
+        namedtype.NamedType("ekPublic", univ.OctetString()),
+        namedtype.NamedType("ekCertChain", EkCertChain()),
     )
 
 
-@dataclass(frozen=True)
-class VerifierMakeCredentialRequest:
-    """CA/RA JSON request asking the Verifier to run MakeCredential."""
+class KeyAttestResp(univ.Sequence):
+    """``KeyAttestResp ::= SEQUENCE { encSeed, encSecret }``."""
 
-    transaction_id: str
-    ak_name: bytes
-    ek_cert_chain: Sequence[bytes]
-    policy: Mapping[str, Any] | None = None
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType("encSeed", univ.OctetString()),
+        namedtype.NamedType("encSecret", univ.OctetString()),
+    )
 
 
-@dataclass(frozen=True)
-class VerifierMakeCredentialResult:
-    """Verifier JSON result for delegated MakeCredential.
+class KeyAttestEvidence(univ.Sequence):
+    """``KeyAttestEvidence ::= SEQUENCE { tcgCertifyInfo, tpmSignature, tpmTPublic, keyAttestSignature }``."""
 
-    ``seed`` is the CA/RA-side activation secret used for later PoP
-    verification.  It MUST NOT be sent to the client.  ``encSeed`` and
-    ``encSecret`` are copied into ``KeyAttestResp`` for TPM2_ActivateCredential.
-    """
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType("tcgCertifyInfo", univ.OctetString()),
+        namedtype.NamedType("tpmSignature", univ.OctetString()),
+        namedtype.NamedType("tpmTPublic", univ.OctetString()),
+        namedtype.NamedType("keyAttestSignature", univ.OctetString()),
+    )
 
-    seed: bytes
-    enc_seed: bytes
-    enc_secret: bytes
+
+# ── builders ─────────────────────────────────────────────────────────────────
+
+
+def prepare_key_attest_chall(
+    ak_name: bytes,
+    ek_public: bytes,
+    ek_cert_chain_pem: str,
+) -> KeyAttestChall:
+    """Build a client ``KeyAttestChall`` from the AK name, marshalled EK public, and PEM chain."""
+    value = KeyAttestChall()
+    value["akName"] = ak_name
+    value["ekPublic"] = ek_public
+    value["ekCertChain"].extend(pem_chain_to_cmp_certs(ek_cert_chain_pem))
+    return value
+
+
+def prepare_key_attest_resp(enc_seed: bytes, enc_secret: bytes) -> KeyAttestResp:
+    """Build a ``KeyAttestResp`` from the MakeCredential blobs."""
+    value = KeyAttestResp()
+    value["encSeed"] = enc_seed
+    value["encSecret"] = enc_secret
+    return value
+
+
+def prepare_key_attest_evidence(
+    tcg_certify_info: bytes,
+    tpm_signature: bytes,
+    tpm_tpublic: bytes,
+    key_attest_signature: bytes,
+) -> KeyAttestEvidence:
+    """Build a ``KeyAttestEvidence`` from the four marshalled-TPM byte fields."""
+    value = KeyAttestEvidence()
+    value["tcgCertifyInfo"] = tcg_certify_info
+    value["tpmSignature"] = tpm_signature
+    value["tpmTPublic"] = tpm_tpublic
+    value["keyAttestSignature"] = key_attest_signature
+    return value
+
+
+# ── DER codecs ───────────────────────────────────────────────────────────────
+
+
+def encode_to_der(value: Any) -> bytes:
+    """DER-encode any pyasn1 structure."""
+    return bytes(_der_encoder.encode(value))
+
+
+def _decode_der(der: bytes, asn1_spec, name: str):
+    try:
+        decoded, rest = _der_decoder.decode(bytes(der), asn1Spec=asn1_spec)
+    except Exception as exc:  # noqa: BLE001 - pyasn1 raises PyAsn1Error subclasses
+        raise ValueError(f"failed to decode {name}: {exc}") from exc
+    if rest:
+        raise ValueError(f"trailing bytes after {name} SEQUENCE")
+    return decoded
+
+
+def decode_key_attest_chall(der: bytes) -> KeyAttestChall:
+    """DER-decode bytes into a :class:`KeyAttestChall`."""
+    return _decode_der(der, KeyAttestChall(), "KeyAttestChall")
+
+
+def decode_key_attest_resp(der: bytes) -> KeyAttestResp:
+    """DER-decode bytes into a :class:`KeyAttestResp`."""
+    return _decode_der(der, KeyAttestResp(), "KeyAttestResp")
+
+
+def decode_key_attest_evidence(der: bytes) -> KeyAttestEvidence:
+    """DER-decode bytes into a :class:`KeyAttestEvidence`."""
+    return _decode_der(der, KeyAttestEvidence(), "KeyAttestEvidence")
+
+
+# ── JSON adapters (RA engine ↔ Verifier, the single translation point) ────────
 
 
 def _decode_hex_field(data: Mapping[str, Any], key: str, owner: str) -> bytes:
@@ -120,197 +187,60 @@ def _decode_hex_field(data: Mapping[str, Any], key: str, owner: str) -> bytes:
         raise ValueError(f"{owner}: field {key} must be a valid hex string") from exc
 
 
-def prepare_key_attest_chall(
-    ak_name: bytes,
-    ek_cert_chain: Sequence[bytes],
-) -> KeyAttestChall:
-    """Build a client-to-CA/RA ``KeyAttestChall`` OID + JSON value."""
-    payload = {
-        "akName": ak_name.hex(),
-        "ekCertChain": [cert.hex() for cert in ek_cert_chain],
-    }
-    return prepare_oid_json_value(KeyAttestChall, resolve_key_attest_chall_oid(), payload)
+def _cert_to_pem(cert: rfc9480.CMPCertificate) -> str:
+    der = bytes(_der_encoder.encode(cert))
+    b64 = base64.b64encode(der).decode("ascii")
+    body = "\n".join(b64[i : i + 64] for i in range(0, len(b64), 64))
+    return f"-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n"
 
 
-def prepare_key_attest_resp(enc_seed: bytes, enc_secret: bytes) -> KeyAttestResp:
-    """Build the client-facing response from Verifier MakeCredential output."""
-    payload = {
-        "encSeed": enc_seed.hex(),
-        "encSecret": enc_secret.hex(),
-    }
-    return prepare_oid_json_value(KeyAttestResp, resolve_key_attest_resp_oid(), payload)
+def _certs_to_pem(certs: Iterable[rfc9480.CMPCertificate]) -> str:
+    return "".join(_cert_to_pem(cert) for cert in certs)
 
 
-def prepare_key_attest_pop(
-    signature_algorithm: rfc5280.AlgorithmIdentifier,
-    signature: bytes,
-) -> KeyAttestPoP:
-    """Build a ``KeyAttestPoP`` extension value."""
-    value = KeyAttestPoP()
-    value["signatureAlgorithm"] = signature_algorithm
-    value["signature"] = univ.BitString.fromOctetString(signature)
-    return value
+def key_attest_chall_to_json(chall_der: bytes) -> dict[str, str]:
+    """Decode a ``KeyAttestChall`` DER into the JSON the engine POSTs to ``/makeCredential``.
 
-
-def key_attest_chall_json_value(value: KeyAttestChall) -> dict[str, Any]:
-    """Return the decoded application JSON payload from ``KeyAttestChall``."""
-    return decode_oid_json_value(
-        value,
-        expected_oid=resolve_key_attest_chall_oid(),
-        name="KeyAttestChall",
-    )
-
-
-def key_attest_resp_json_value(value: KeyAttestResp) -> dict[str, Any]:
-    """Return the decoded application JSON payload from ``KeyAttestResp``."""
-    return decode_oid_json_value(
-        value,
-        expected_oid=resolve_key_attest_resp_oid(),
-        name="KeyAttestResp",
-    )
-
-
-def verifier_make_credential_request_to_json(
-    request: VerifierMakeCredentialRequest,
-) -> dict[str, Any]:
-    """Encode a Verifier MakeCredential request as JSON-safe values."""
-    data: dict[str, Any] = {
-        "transactionID": request.transaction_id,
-        "akName": request.ak_name.hex(),
-        "ekCertChain": [cert.hex() for cert in request.ek_cert_chain],
-    }
-    if request.policy is not None:
-        data["policy"] = dict(request.policy)
-    return data
-
-
-def verifier_make_credential_result_from_json(
-    data: Mapping[str, Any],
-) -> VerifierMakeCredentialResult:
-    """Decode Verifier MakeCredential JSON with hex-encoded byte strings."""
-    return VerifierMakeCredentialResult(
-        seed=_decode_hex_field(data, "seed", "VerifierMakeCredentialResult"),
-        enc_seed=_decode_hex_field(data, "encSeed", "VerifierMakeCredentialResult"),
-        enc_secret=_decode_hex_field(data, "encSecret", "VerifierMakeCredentialResult"),
-    )
-
-
-def verifier_make_credential_result_to_json(
-    result: VerifierMakeCredentialResult,
-) -> dict[str, str]:
-    """Encode Verifier MakeCredential result as JSON-safe hex strings."""
+    Returns ``{akName: hex, ekPublic: hex, ekCertChain: PEM}``.  ``ekCertChain`` is a
+    single concatenated PEM string (one ``BEGIN CERTIFICATE`` block per cert).
+    """
+    chall = decode_key_attest_chall(chall_der)
     return {
-        "seed": result.seed.hex(),
-        "encSeed": result.enc_seed.hex(),
-        "encSecret": result.enc_secret.hex(),
+        "akName": bytes(chall["akName"]).hex(),
+        "ekPublic": bytes(chall["ekPublic"]).hex(),
+        "ekCertChain": _certs_to_pem(chall["ekCertChain"]),
     }
 
 
-def encode_to_der(value: Any) -> bytes:
-    """DER-encode any pyasn1 structure."""
-    return bytes(_der_encoder.encode(value))
+def key_attest_resp_from_json(data: Mapping[str, Any]) -> bytes:
+    """Build ``KeyAttestResp`` DER from the Verifier's ``{encSeed, encSecret}`` (hex) reply.
 
-
-def decode_key_attest_chall(der: bytes) -> KeyAttestChall:
-    """DER-decode bytes into a KeyAttestChall structure."""
-    return _decode_der(der, KeyAttestChall(), "KeyAttestChall")
-
-
-def decode_key_attest_resp(der: bytes) -> KeyAttestResp:
-    """DER-decode bytes into a KeyAttestResp structure."""
-    return _decode_der(der, KeyAttestResp(), "KeyAttestResp")
-
-
-def decode_key_attest_pop(der: bytes) -> KeyAttestPoP:
-    """DER-decode bytes into a KeyAttestPoP structure."""
-    return _decode_der(der, KeyAttestPoP(), "KeyAttestPoP")
-
-
-def _decode_der(der: bytes, asn1_spec, name: str):
-    try:
-        decoded, rest = _der_decoder.decode(der, asn1Spec=asn1_spec)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"failed to decode {name}: {exc}") from exc
-    if rest:
-        raise ValueError(f"trailing bytes after {name} SEQUENCE")
-    return decoded
-
-
-def key_attest_chall_ak_name(value: KeyAttestChall) -> bytes:
-    """Extract the AK name bytes from a KeyAttestChall (hex-decoded from JSON payload)."""
-    return _decode_hex_field(key_attest_chall_json_value(value), "akName", "KeyAttestChall")
-
-
-def key_attest_chall_ek_cert_chain(value: KeyAttestChall) -> list[bytes]:
-    """Extract the EK certificate chain from a KeyAttestChall as a list of DER bytes."""
-    payload = key_attest_chall_json_value(value)
-    chain = payload.get("ekCertChain")
-    if not isinstance(chain, list):
-        raise ValueError("KeyAttestChall: ekCertChain must be an array")
-    result: list[bytes] = []
-    for item in chain:
-        if not isinstance(item, str):
-            raise ValueError("KeyAttestChall: ekCertChain entries must be hex strings")
-        try:
-            result.append(bytes.fromhex(item))
-        except ValueError as exc:
-            raise ValueError("KeyAttestChall: ekCertChain entries must be valid hex") from exc
-    return result
-
-
-def key_attest_resp_enc_seed(value: KeyAttestResp) -> bytes:
-    """Extract the encSeed bytes from a KeyAttestResp (hex-decoded from JSON payload)."""
-    return _decode_hex_field(key_attest_resp_json_value(value), "encSeed", "KeyAttestResp")
-
-
-def key_attest_resp_enc_secret(value: KeyAttestResp) -> bytes:
-    """Extract the encSecret bytes from a KeyAttestResp (hex-decoded from JSON payload)."""
-    return _decode_hex_field(key_attest_resp_json_value(value), "encSecret", "KeyAttestResp")
-
-
-def key_attest_pop_algorithm_oid(value: KeyAttestPoP) -> str:
-    """Return the signature algorithm OID string from a KeyAttestPoP."""
-    return str(value["signatureAlgorithm"]["algorithm"])
-
-
-def key_attest_pop_signature(value: KeyAttestPoP) -> bytes:
-    """Return the raw signature bytes from a KeyAttestPoP."""
-    return bytes(value["signature"].asOctets())
+    This is what the MockCA embeds in ``NonceResponse.respInfo``.
+    """
+    resp = prepare_key_attest_resp(
+        enc_seed=_decode_hex_field(data, "encSeed", "KeyAttestResp"),
+        enc_secret=_decode_hex_field(data, "encSecret", "KeyAttestResp"),
+    )
+    return encode_to_der(resp)
 
 
 __all__ = [
-    "DEFAULT_KEY_ATTEST_CHALL_OID",
-    "DEFAULT_KEY_ATTEST_POP_OID",
-    "DEFAULT_KEY_ATTEST_RESP_OID",
-    "ID_ECDSA_WITH_SHA256",
-    "ID_SHA256_WITH_RSA_ENCRYPTION",
-    "KEY_ATTEST_CHALL_OID_ENV",
-    "KEY_ATTEST_POP_OID_ENV",
-    "KEY_ATTEST_RESP_OID_ENV",
+    "DEFAULT_KEY_ATTEST_EVIDENCE_OID",
+    "ID_KEY_ATTEST_EVIDENCE",
+    "ID_KEY_ATTEST_EVIDENCE_DOTTED",
+    "KEY_ATTEST_EVIDENCE_OID_ENV",
+    "EkCertChain",
     "KeyAttestChall",
-    "KeyAttestPoP",
+    "KeyAttestEvidence",
     "KeyAttestResp",
-    "VerifierMakeCredentialRequest",
-    "VerifierMakeCredentialResult",
     "decode_key_attest_chall",
-    "decode_key_attest_pop",
+    "decode_key_attest_evidence",
     "decode_key_attest_resp",
     "encode_to_der",
-    "key_attest_chall_ak_name",
-    "key_attest_chall_ek_cert_chain",
-    "key_attest_chall_json_value",
-    "key_attest_pop_algorithm_oid",
-    "key_attest_pop_signature",
-    "key_attest_resp_enc_secret",
-    "key_attest_resp_enc_seed",
-    "key_attest_resp_json_value",
+    "key_attest_chall_to_json",
+    "key_attest_resp_from_json",
     "prepare_key_attest_chall",
-    "prepare_key_attest_pop",
+    "prepare_key_attest_evidence",
     "prepare_key_attest_resp",
-    "resolve_key_attest_chall_oid",
-    "resolve_key_attest_pop_oid",
-    "resolve_key_attest_resp_oid",
-    "verifier_make_credential_request_to_json",
-    "verifier_make_credential_result_from_json",
-    "verifier_make_credential_result_to_json",
+    "resolve_key_attest_evidence_oid",
 ]

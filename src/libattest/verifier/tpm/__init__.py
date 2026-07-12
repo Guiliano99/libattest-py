@@ -9,10 +9,7 @@ from libattest.verifier.tpm.reference_values import (
     load_pcr_reference_values,
     verify_pcr_quote,
 )
-from libattest.verifier.tpm.tpm_keyattest_verifier import (
-    TpmActivationChallenge,
-    TpmKeyAttestVerifier,
-)
+from libattest.verifier.tpm.tpm_keyattest_verifier import TpmKeyAttestVerifier
 from libattest.verifier.tpm.tpm_platform_verifier import (
     TPM_ALG_ECDSA,
     TPM_ALG_RSAPSS,
@@ -38,7 +35,6 @@ __all__ = [
     "TPM_ALG_SHA512",
     "TPM_GENERATED_VALUE",
     "TPM_ST_ATTEST_QUOTE",
-    "TpmActivationChallenge",
     "TpmKeyAttestVerifier",
     "TpmPlatformVerifier",
     "TpmQuoteSignatureEvidence",

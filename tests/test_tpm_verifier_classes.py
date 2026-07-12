@@ -5,17 +5,8 @@ import struct
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from libattest.formats.key_attest_pop import (
-    compute_key_attest_pop,
-    decode_key_attest_resp,
-    encode_to_der,
-    key_attest_resp_enc_secret,
-    key_attest_resp_enc_seed,
-    prepare_key_attest_chall,
-)
 from libattest.types import EarStatus
 from libattest.verifier.reference import ReferenceCheckResult, VerifierReferenceHandler
-from libattest.verifier.tpm.tpm_keyattest_verifier import TpmKeyAttestVerifier
 from libattest.verifier.tpm.tpm_platform_verifier import (
     TPM_ALG_RSASSA,
     TPM_ALG_SHA256,
@@ -95,40 +86,3 @@ def test_platform_verifier_rejects_quote_signature_with_wrong_nonce():
 
     assert result.status == EarStatus.contraindicated
     assert "nonce" in result.errors[0]
-
-
-def test_key_verifier_builds_activation_challenge_and_verifies_pop_after_activatecredential():
-    verifier = TpmKeyAttestVerifier(reference_handler=AcceptAllReferenceHandler())
-    requested_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    spki_der = requested_key.public_key().public_bytes(
-        serialization.Encoding.DER,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    chall_der = encode_to_der(prepare_key_attest_chall(b"ak-name", [b"ek-cert"]))
-    calls = []
-
-    def fake_make_credential(*, ak_name: bytes, ek_cert_chain, seed: bytes):
-        calls.append((ak_name, tuple(ek_cert_chain), seed))
-        return b"enc-seed", b"enc-secret"
-
-    challenge = verifier.build_activation_challenge(
-        chall_der,
-        transaction_id="txn-1",
-        make_credential=fake_make_credential,
-    )
-
-    assert calls == [(b"ak-name", (b"ek-cert",), challenge.seed)]
-    response = decode_key_attest_resp(challenge.response_der)
-    assert key_attest_resp_enc_seed(response) == b"enc-seed"
-    assert key_attest_resp_enc_secret(response) == b"enc-secret"
-
-    # In the real flow the client TPM runs TPM2_ActivateCredential with the
-    # response blobs and recovers challenge.seed.  The verifier then checks PoP.
-    pop = compute_key_attest_pop(requested_key, challenge.seed)
-    result = verifier.verify_activation_pop(
-        seed=challenge.seed,
-        spki_der=spki_der,
-        pop_der=encode_to_der(pop),
-    )
-
-    assert result.status == EarStatus.affirming
