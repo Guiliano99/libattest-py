@@ -50,16 +50,20 @@ def run_synthetic() -> None:
     verifier = KeyBindingVerifier()
 
     evidence = attester.produce(NONCE)
-    print(f"evidence: TcgAttestCertify DER = {len(evidence.certify_der())} bytes "
-          f"(OID 2.23.133.20.1); TPMT_PUBLIC = {len(evidence.subject_tpmt_public)} bytes")
+    print(
+        f"evidence: TcgAttestCertify DER = {len(evidence.certify_der())} bytes "
+        f"(OID 2.23.133.20.1); TPMT_PUBLIC = {len(evidence.subject_tpmt_public)} bytes"
+    )
 
     result = verifier.appraise(evidence, expected_nonce=NONCE, policy=POLICY)
     print(f"verdict : {result.status.value}")
     assert result.accepted, result.errors
 
     ear = result.payload
-    print(f"EAR sig : {'verified' if verify_ear_jwt(ear, verifier.ear_verification_key()) else 'FAILED'} "
-          f"under the Verifier's public key")
+    print(
+        f"EAR sig : {'verified' if verify_ear_jwt(ear, verifier.ear_verification_key()) else 'FAILED'} "
+        f"under the Verifier's public key"
+    )
     print(f"RP read : ear_is_affirming(ear) = {ear_is_affirming(ear)}  (via the repo helper)")
     print("EAR payload:")
     print(_pretty(ear))

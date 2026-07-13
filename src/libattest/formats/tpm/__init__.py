@@ -99,9 +99,8 @@ def __getattr__(name: str):
 
 def __dir__() -> list[str]:
     """Include the lazy exports in ``dir()`` for discoverability."""
-    return sorted(
-        set(globals()) | _LAZY_TPMS_ATTEST_EXPORTS | set(_LAZY_MODULE_EXPORTS)
-    )
+    return sorted(set(globals()) | _LAZY_TPMS_ATTEST_EXPORTS | set(_LAZY_MODULE_EXPORTS))
+
 
 __all__ = [
     "TPM_ALG_ECDSA",

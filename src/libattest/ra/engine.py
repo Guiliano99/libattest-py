@@ -225,9 +225,7 @@ class RemoteAttestationEngine:
             if drop_transaction:
                 self.nonce_store.drop_transaction(tx_id)
 
-    def _verify_bundle(
-        self, bundle_der: bytes, tx_id: bytes, *, pubkey: bytes | None = None
-    ) -> BundleVerifyOutcome:
+    def _verify_bundle(self, bundle_der: bytes, tx_id: bytes, *, pubkey: bytes | None = None) -> BundleVerifyOutcome:
         try:
             bundle = decode_attestation_bundle(bundle_der)
         except ValueError as exc:
@@ -257,9 +255,7 @@ class RemoteAttestationEngine:
 
             # 1. Consume the nonce (OID-keyed first, positional fallback).
             try:
-                nonce_state = self._consume_nonce(
-                    tx_id, stmt_oid, oid_instance, positional_instance
-                )
+                nonce_state = self._consume_nonce(tx_id, stmt_oid, oid_instance, positional_instance)
             except _NonceError as exc:
                 logger.warning("RA engine: statement oid=%s — %s", stmt_oid, exc)
                 verdicts.append(VerifyResult.unknown(str(exc)))
@@ -298,9 +294,7 @@ class RemoteAttestationEngine:
                         stmt_oid,
                         ref.reason,
                     )
-                    verdict = VerifyResult.contraindicated(
-                        f"reference check failed: {ref.reason or 'no reason given'}"
-                    )
+                    verdict = VerifyResult.contraindicated(f"reference check failed: {ref.reason or 'no reason given'}")
 
             verdicts.append(verdict)
             route_oids.append(stmt_oid)
@@ -333,9 +327,7 @@ class RemoteAttestationEngine:
         media_type = getattr(verifier, "media_type", "application/octet-stream")
 
         if profile.build_challenge is not None and not pubkey:
-            return VerifyResult.contraindicated(
-                "key attestation requires the to-be-certified SubjectPublicKeyInfo"
-            )
+            return VerifyResult.contraindicated("key attestation requires the to-be-certified SubjectPublicKeyInfo")
 
         if isinstance(verifier, VeraisonVerifierClient):
             resp_info_json = self._resp_info_json(profile, nonce_state.resp_info)
@@ -355,9 +347,7 @@ class RemoteAttestationEngine:
                 **extra,
             )
             if ear_jwt is None:
-                return VerifyResult.contraindicated(
-                    f"verifier rejected statement oid={stmt_oid}"
-                )
+                return VerifyResult.contraindicated(f"verifier rejected statement oid={stmt_oid}")
             return VerifyResult.affirming(ear_jwt)
 
         return verifier.verify_token(stmt_bytes, media_type, nonce_state.nonce)

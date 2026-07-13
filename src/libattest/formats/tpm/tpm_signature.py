@@ -31,9 +31,7 @@ def to_tpm2b_public(public_key) -> TPM2B_PUBLIC:
         return public_key
     if isinstance(public_key, (bytes, bytearray)):
         return TPM2B_PUBLIC.from_pem(bytes(public_key))
-    der = public_key.public_bytes(
-        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
+    der = public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     return TPM2B_PUBLIC.from_pem(der)
 
 

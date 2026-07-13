@@ -356,8 +356,6 @@ def unwrap_attestation_statement(stmt_raw: bytes) -> tuple[bytes, bool]:
         try:
             inner, _rest = der_decoder.decode(stmt_raw, asn1Spec=univ.OctetString())
         except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
-            raise ValueError(
-                f"AttestationStatement.stmt: cannot decode OCTET STRING: {exc}"
-            ) from exc
+            raise ValueError(f"AttestationStatement.stmt: cannot decode OCTET STRING: {exc}") from exc
         return bytes(inner), True
     return stmt_raw, False

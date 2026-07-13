@@ -215,10 +215,12 @@ def tpm20_quote_request_info(
     supported_hash_algos: Iterable[int] | None = None,
 ) -> univ.Any:
     """Build a ``NonceRequestTypeInfo.reqInfo`` ANY value."""
-    return univ.Any(hexValue=encode_tpm20_quote_req_info(
-        certificate_names=certificate_names,
-        supported_hash_algos=supported_hash_algos,
-    ).hex())
+    return univ.Any(
+        hexValue=encode_tpm20_quote_req_info(
+            certificate_names=certificate_names,
+            supported_hash_algos=supported_hash_algos,
+        ).hex()
+    )
 
 
 def tpm20_quote_response_info(
@@ -228,11 +230,13 @@ def tpm20_quote_response_info(
     certificate_name: str | None = None,
 ) -> univ.Any:
     """Build a ``NonceResponseTypeInfo.respInfo`` ANY value."""
-    return univ.Any(hexValue=encode_tpm20_quote_resp_info(
-        certificate_name=certificate_name,
-        pcr_selection=pcr_selection,
-        hash_algo=hash_algo,
-    ).hex())
+    return univ.Any(
+        hexValue=encode_tpm20_quote_resp_info(
+            certificate_name=certificate_name,
+            pcr_selection=pcr_selection,
+            hash_algo=hash_algo,
+        ).hex()
+    )
 
 
 def tpm20_quote_resp_info_from_response_info(

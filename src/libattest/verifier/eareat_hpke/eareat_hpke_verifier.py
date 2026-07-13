@@ -127,9 +127,11 @@ class EarEatHpkeVerifier(AttestationVerifier):
 
     def ear_verification_pem(self) -> str:
         """Return the EAR-JWT signing public key (PEM) for the MockCA to verify EARs."""
-        return self._ear_signing_key.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        ).decode("ascii")
+        return (
+            self._ear_signing_key.public_key()
+            .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+            .decode("ascii")
+        )
 
     # ── AttestationVerifier interface ────────────────────────────────────────────
     def get_nonce(self, nonce_size: int = 32) -> bytes:
@@ -159,9 +161,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
         Uses libattest's CMP nonce-freshness structures (``NonceResponse``); the attester
         reads ``respTypeInfo.respInfo`` to learn the recipient key to encrypt Evidence to.
         """
-        return evidence.build_evidence_enc_nonce_response(
-            nonce, self._hpke_recipient_key.public_key(), expiry=expiry
-        )
+        return evidence.build_evidence_enc_nonce_response(nonce, self._hpke_recipient_key.public_key(), expiry=expiry)
 
     def verify_bundle_der(self, bundle_der: bytes, nonce: bytes) -> VerifyResult:
         """Appraise the first statement of an AttestationBundle DER (convenience entrypoint).
@@ -180,16 +180,16 @@ class EarEatHpkeVerifier(AttestationVerifier):
     def _appraise(self, stmt_der: bytes, expected_nonce: bytes) -> VerifyResult:
         expected_b64u = jose_jws.b64u_encode(expected_nonce)
         try:
-            jwe = evidence.extract_jwe_from_statement(stmt_der)                   # G0
+            jwe = evidence.extract_jwe_from_statement(stmt_der)  # G0
             header, inner = jose_hpke.open_integrated(jwe, self._hpke_recipient_key)  # G1/G2
         except (ValueError, InvalidTag) as exc:
             logger.warning("evidence decode/decrypt failed: %s", exc)
             return VerifyResult.contraindicated(f"evidence decode/decrypt failed: {exc}")
 
-        if eat_nonce_bytes(header.get("eat_nonce", "")) != expected_nonce:        # G4a
+        if eat_nonce_bytes(header.get("eat_nonce", "")) != expected_nonce:  # G4a
             return VerifyResult.contraindicated("protected-header eat_nonce mismatch")
 
-        try:                                                                     # G3
+        try:  # G3
             claims = jose_jws.verify_es256(inner.decode("ascii"), self._attestation_public_key)
         except (ValueError, jose_jws.InvalidSignature) as exc:
             logger.warning("inner EAT-JWS verification failed: %s", exc)
@@ -216,9 +216,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
 
     def _build_ear_jwt(self, nonce_b64url: str, status: str) -> str:
         trust_vector = (
-            {key: 0 for key in _TRUST_VECTOR_KEYS}
-            if status == "affirming"
-            else {key: 99 for key in _TRUST_VECTOR_KEYS}
+            {key: 0 for key in _TRUST_VECTOR_KEYS} if status == "affirming" else {key: 99 for key in _TRUST_VECTOR_KEYS}
         )
         # Build a validated EARToken first (type-checks the status tier, nonce bounds, and
         # structure), then emit it in this verifier's Veraison wire format (dotted keys).

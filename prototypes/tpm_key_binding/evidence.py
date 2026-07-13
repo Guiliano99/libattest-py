@@ -65,11 +65,7 @@ class KeyBindingEvidence:
         attestation-bundle machinery: the same SEQUENCE the platform-quote path
         already uses, under the key-attestation OID ``2.23.133.20.1``.
         """
-        return _der_encode(
-            prepare_tcg_attest_certify(
-                self.tpms_attest, self.tpmt_signature, self.subject_tpmt_public
-            )
-        )
+        return _der_encode(prepare_tcg_attest_certify(self.tpms_attest, self.tpmt_signature, self.subject_tpmt_public))
 
 
 __all__ = ["KeyBindingEvidence"]

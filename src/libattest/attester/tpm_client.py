@@ -138,6 +138,7 @@ def _read_pcr_values_raw(ectx: ESAPI, pcr_selection: str) -> bytes:
     _update_counter, _selection_out, digests = ectx.pcr_read(pcr_selection)
     return b"".join(bytes(digests.digests[i]) for i in range(digests.count))
 
+
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
@@ -691,9 +692,7 @@ class TpmClient:
         if isinstance(nonce, str):
             nonce = nonce.encode()
 
-        parent_handle, subject_public, subject_private = _read_tss2_private_key_pem(
-            subject_key_pem_path
-        )
+        parent_handle, subject_public, subject_private = _read_tss2_private_key_pem(subject_key_pem_path)
         parent_tr = self.ectx.tr_from_tpmpublic(parent_handle)
         subject_tr = self.ectx.load(parent_tr, subject_private, subject_public)
         try:

@@ -58,9 +58,7 @@ def _load_public_key(data: bytes) -> PublicKeyTypes:
 
 
 def _spki_der(public_key: PublicKeyTypes) -> bytes:
-    return public_key.public_bytes(
-        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
+    return public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
 def _load_certs(pem: bytes | str) -> list[x509.Certificate]:
@@ -124,13 +122,9 @@ class TpmKeyAttestVerifier:
         except ValueError as exc:
             return VerifyResult.contraindicated(f"TPMS_ATTEST parse failed: {exc}")
         if parsed.magic != TPM_GENERATED_VALUE:
-            return VerifyResult.contraindicated(
-                f"TPMS_ATTEST magic is not TPM_GENERATED_VALUE: {parsed.magic:#010x}"
-            )
+            return VerifyResult.contraindicated(f"TPMS_ATTEST magic is not TPM_GENERATED_VALUE: {parsed.magic:#010x}")
         if parsed.attest_type != _TPM_ST_ATTEST_CERTIFY:
-            return VerifyResult.contraindicated(
-                f"TPMS_ATTEST type is not ATTEST_CERTIFY: {parsed.attest_type:#06x}"
-            )
+            return VerifyResult.contraindicated(f"TPMS_ATTEST type is not ATTEST_CERTIFY: {parsed.attest_type:#06x}")
 
         # Check 5 — freshness: extraData echoes the issued nonce.
         if parsed.nonce != bytes(nonce):

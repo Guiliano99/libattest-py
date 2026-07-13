@@ -45,8 +45,7 @@ def _check_time_validity(cert: x509.Certificate, now: _dt.datetime) -> None:
     not_after = cert.not_valid_after_utc
     if now < not_before or now > not_after:
         raise ValueError(
-            f"certificate not valid at {now.isoformat()} "
-            f"(valid {not_before.isoformat()}..{not_after.isoformat()})"
+            f"certificate not valid at {now.isoformat()} (valid {not_before.isoformat()}..{not_after.isoformat()})"
         )
 
 

@@ -78,9 +78,7 @@ def hpke0_suite() -> _hpke.Suite:
 
 def _enc_len(public_key: ec.EllipticCurvePublicKey) -> int:
     """Return the DHKEM ``enc`` length (the uncompressed-point size for this curve)."""
-    point = public_key.public_bytes(
-        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
-    )
+    point = public_key.public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
     return len(point)
 
 
@@ -115,9 +113,7 @@ def open_integrated(
     # HPKE-0 is itself the Integrated-Encryption alg (draft-20 §5.1); the protected header
     # carries ``alg`` only and no separate ``enc`` parameter.
     if header.get("alg") != ALG:
-        raise ValueError(
-            f"unsupported JOSE-HPKE alg: {header.get('alg')!r} (this profile allows only {ALG})"
-        )
+        raise ValueError(f"unsupported JOSE-HPKE alg: {header.get('alg')!r} (this profile allows only {ALG})")
 
     # Compact serialization carries no JWE AAD, so the HPKE aad is ASCII(protected header).
     aad = protected_b64.encode("ascii")

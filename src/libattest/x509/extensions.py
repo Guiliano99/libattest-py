@@ -213,9 +213,7 @@ def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
     The returned bytes are the DER of the :class:`CMW` CHOICE, ready to be
     placed verbatim into an X.509 ``Extension.extnValue`` OCTET STRING.
     """
-    value_b64 = (
-        base64.urlsafe_b64encode(ear_jwt.encode("utf-8")).decode("ascii").rstrip("=")
-    )
+    value_b64 = base64.urlsafe_b64encode(ear_jwt.encode("utf-8")).decode("ascii").rstrip("=")
     record = json.dumps(["application/eat+jwt", value_b64], separators=(",", ":"))
     cmw = CMW()
     cmw.setComponentByName("json", char.UTF8String(record))

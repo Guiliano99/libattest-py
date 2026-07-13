@@ -20,6 +20,7 @@ from cwt import COSEKey, CWTClaims
 # Key helpers
 # --------------------------------------------------------------------------
 
+
 def generate_es256_keypair(kid: str = "my-signing-key-01"):
     """
     Generate a fresh ES256 (P-256) key pair.
@@ -49,6 +50,7 @@ def generate_es256_keypair(kid: str = "my-signing-key-01"):
 # --------------------------------------------------------------------------
 # JWT -> CWT conversion
 # --------------------------------------------------------------------------
+
 
 def jwt_claims_to_cwt_claims(jwt_claims: dict) -> dict:
     """
@@ -141,6 +143,7 @@ def convert_jwt_to_cwt(
 # Re-signing an existing CWT
 # --------------------------------------------------------------------------
 
+
 def resign_cwt(
     cwt_token: bytes,
     old_verify_key: COSEKey,
@@ -176,6 +179,7 @@ def resign_cwt(
 # --------------------------------------------------------------------------
 # Demo
 # --------------------------------------------------------------------------
+
 
 def main():
     """Run the three CWT demos (plain sign+verify, JWT->CWT, re-sign) with printed output."""
@@ -217,9 +221,7 @@ def main():
 
     # --- 3. Re-sign an existing CWT under a new key ----------------------
     new_cwt_key, new_cwt_verify_key, _, _ = generate_es256_keypair(kid="cwt-key-02")
-    resigned = resign_cwt(
-        token, cwt_verify_key, new_cwt_key, refresh_validity=True, expires_in=7200
-    )
+    resigned = resign_cwt(token, cwt_verify_key, new_cwt_key, refresh_validity=True, expires_in=7200)
     print("\n3) Re-signed CWT under a new key, decoded & verified:")
     print("  ", cwt.decode(resigned, new_cwt_verify_key))
 

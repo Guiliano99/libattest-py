@@ -125,9 +125,7 @@ class VeraisonVerifierClient(AttestationVerifier):
         """
         ear_jwt = self.submit_evidence(nonce or b"", token_bytes)
         if ear_jwt is None:
-            return VerifyResult.contraindicated(
-                f"verifier {self.base_url} rejected the evidence"
-            )
+            return VerifyResult.contraindicated(f"verifier {self.base_url} rejected the evidence")
         return VerifyResult.affirming(ear_jwt)
 
     # ── /submitEvidenceCMP ─────────────────────────────────────────────────────
@@ -234,8 +232,7 @@ class VeraisonVerifierClient(AttestationVerifier):
         pub_key = self._fetch_ear_public_key()
         if pub_key is None:
             logger.error(
-                "VeraisonVerifierClient: no EAR signing key available from %s "
-                "— rejecting evidence (fail closed)",
+                "VeraisonVerifierClient: no EAR signing key available from %s — rejecting evidence (fail closed)",
                 self.base_url,
             )
             return None

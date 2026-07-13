@@ -113,9 +113,7 @@ def _subject_tpmt_public(subject_public: ec.EllipticCurvePublicKey, attrs: int) 
     exactly this key, so the certified public area, ``cnf``, and the PoP key are
     provably the same key.
     """
-    pem = subject_public.public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
+    pem = subject_public.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
     tpm2b = TPM2B_PUBLIC.from_pem(pem, nameAlg=TPM2_ALG.SHA256, objectAttributes=attrs)
     return tpm2b.publicArea.marshal()
 
@@ -225,9 +223,7 @@ class TpmKeyBindingAttester:
             # 3) Proof-of-possession: TPM2_Sign the nonce with the Subject Key.
             sign_scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.ECDSA)
             sign_scheme.details.ecdsa.hashAlg = TPM2_ALG.SHA256
-            null_ticket = TPMT_TK_HASHCHECK(
-                tag=TPM2_ST.HASHCHECK, hierarchy=TPM2_RH.NULL, digest=b""
-            )
+            null_ticket = TPMT_TK_HASHCHECK(tag=TPM2_ST.HASHCHECK, hierarchy=TPM2_RH.NULL, digest=b"")
             pop = ectx.sign(
                 subject_handle,
                 hashlib.sha256(bytes(nonce)).digest(),

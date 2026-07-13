@@ -238,13 +238,9 @@ class Base64UrlBytes:
         return hash((type(self), self._raw))
 
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls, source_type: Any, handler: GetCoreSchemaHandler
-    ) -> CoreSchema:
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: GetCoreSchemaHandler) -> CoreSchema:
         """Validate from bytes or base64url str; serialise to a base64url str."""
-        from_str = core_schema.no_info_after_validator_function(
-            cls.from_b64_str, core_schema.str_schema()
-        )
+        from_str = core_schema.no_info_after_validator_function(cls.from_b64_str, core_schema.str_schema())
         return core_schema.json_or_python_schema(
             json_schema=from_str,
             python_schema=core_schema.no_info_plain_validator_function(cls._pydantic_validate),
@@ -274,8 +270,7 @@ class Base64UrlBytes:
         if isinstance(value, str):
             return cls.from_b64_str(value)
         raise ValueError(
-            f"Cannot construct {cls.__name__} from {type(value).__name__}; "
-            "expected bytes or a base64url str"
+            f"Cannot construct {cls.__name__} from {type(value).__name__}; expected bytes or a base64url str"
         )
 
 

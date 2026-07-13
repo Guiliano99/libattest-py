@@ -147,9 +147,7 @@ class KeyBindingPolicy:
             errors.append("policy requires local=true (TPM sensitiveDataOrigin not set)")
         for purpose in self.require_purposes:
             if purpose not in attrs.purpose:
-                errors.append(
-                    f"policy requires key purpose {purpose!r}; certified purposes={list(attrs.purpose)}"
-                )
+                errors.append(f"policy requires key purpose {purpose!r}; certified purposes={list(attrs.purpose)}")
         return errors
 
 

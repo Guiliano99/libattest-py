@@ -142,9 +142,7 @@ class AttestationProfile:
     verifier: AttestationVerifier | None = None
     verifier_url: str | None = None
     reference_handler: VerifierReferenceHandler | None = None
-    build_challenge: (
-        Callable[[bytes | None, AttestationVerifier], tuple[bytes | None, str | None]] | None
-    ) = None
+    build_challenge: Callable[[bytes | None, AttestationVerifier], tuple[bytes | None, str | None]] | None = None
 
     def __post_init__(self) -> None:
         """Validate that a verifier is reachable (instance or URL)."""
@@ -327,9 +325,7 @@ def key_attest_profile(
             raise ValueError("key-attest NonceRequest carries no KeyAttestChall reqInfo")
         make_credential = getattr(challenge_verifier, "make_credential", None)
         if make_credential is None:
-            raise TypeError(
-                f"key-attest verifier {type(challenge_verifier).__name__} has no make_credential()"
-            )
+            raise TypeError(f"key-attest verifier {type(challenge_verifier).__name__} has no make_credential()")
         chall = key_attest_chall_to_json(bytes(req_info))
         result = make_credential(
             ak_name=chall["akName"],

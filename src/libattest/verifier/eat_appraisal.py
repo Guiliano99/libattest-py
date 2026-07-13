@@ -88,9 +88,7 @@ def verify_eat_jwt(token_bytes: bytes, trust_anchors: dict[str, Any]) -> dict[st
     )
 
 
-def check_nonce_and_claim(
-    claims: dict[str, Any], expected_nonce: bytes, reference_mock_claim: str
-) -> tuple[str, str]:
+def check_nonce_and_claim(claims: dict[str, Any], expected_nonce: bytes, reference_mock_claim: str) -> tuple[str, str]:
     """Shared freshness + ``mock_claim`` appraisal tail.
 
     ``claims`` is an already signature-verified EAT-JWT claims dict (or, for the

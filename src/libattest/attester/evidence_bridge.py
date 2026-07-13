@@ -251,9 +251,7 @@ def generate_key_attest_evidence(
 
 def _ec_priv_to_cose_key(key: ec.EllipticCurvePrivateKey, kid: str) -> COSEKey:
     """Adapt a ``cryptography`` EC private key to a ``COSEKey`` (via PEM; no direct API)."""
-    pem = key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    )
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
     return COSEKey.from_pem(pem, kid=kid)
 
 

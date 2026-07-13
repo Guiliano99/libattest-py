@@ -65,9 +65,7 @@ DEFAULT_KID = "eareat-hpke-verifier"
 # ── HPKE recipient key <-> SPKI DER (the NonceResponse.respTypeInfo.respInfo payload)
 def hpke_key_to_spki_der(public_key: ec.EllipticCurvePublicKey) -> bytes:
     """Serialise the verifier's HPKE recipient public key as SubjectPublicKeyInfo DER."""
-    return public_key.public_bytes(
-        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
+    return public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
 def hpke_key_from_spki_der(der: bytes) -> ec.EllipticCurvePublicKey:
@@ -108,9 +106,7 @@ def build_evidence_bundle(
     statement_oid: str = EVIDENCE_ENC_OID,
 ) -> bytes:
     """Build the DER ``AttestationBundle`` carrying one HPKE-encrypted evidence statement."""
-    statement = build_evidence_statement(
-        eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid
-    )
+    statement = build_evidence_statement(eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid)
     return _der_encoder.encode(prepare_attestation_bundle([statement]))
 
 
@@ -130,9 +126,7 @@ def sign_and_build_evidence_bundle(
     """
     eat_claims = {**claims, "eat_nonce": jose_jws.b64u_encode(nonce)}
     eat_jws = jose_jws.sign_es256(eat_claims, signer_key)
-    return build_evidence_bundle(
-        eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid
-    )
+    return build_evidence_bundle(eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid)
 
 
 def extract_jwe_from_statement(stmt_der: bytes) -> str:

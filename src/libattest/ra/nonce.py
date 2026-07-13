@@ -125,9 +125,7 @@ class NonceStore:
         self._tx: dict[bytes, _TxState] = {}
         self._lock = Lock()
         self._ttl = int(
-            ttl_seconds
-            if ttl_seconds is not None
-            else os.environ.get("NONCE_TTL_SECONDS", DEFAULT_TTL_SECONDS)
+            ttl_seconds if ttl_seconds is not None else os.environ.get("NONCE_TTL_SECONDS", DEFAULT_TTL_SECONDS)
         )
         self._nonce_bytes = int(nonce_bytes or DEFAULT_NONCE_BYTES)
 
@@ -232,24 +230,16 @@ class NonceStore:
             self._evict_expired_locked()
             tx = self._tx.get(tx_id)
             if tx is None:
-                raise KeyError(
-                    f"no nonces issued for tx_id={tx_id.hex()} "
-                    "(transaction unknown or already cleaned up)"
-                )
+                raise KeyError(f"no nonces issued for tx_id={tx_id.hex()} (transaction unknown or already cleaned up)")
             state = tx.nonces.get((statement_oid, instance))
             if state is None:
-                raise KeyError(
-                    f"no nonce for (tx={tx_id.hex()}, oid={statement_oid or '<none>'}, "
-                    f"instance={instance})"
-                )
+                raise KeyError(f"no nonce for (tx={tx_id.hex()}, oid={statement_oid or '<none>'}, instance={instance})")
             now = time.monotonic()
             if now > state.expires_at:
                 del tx.nonces[(statement_oid, instance)]
                 raise ValueError(f"nonce expired (TTL={self._ttl}s) for tx={tx_id.hex()}")
             if state.consumed:
-                raise ReplayError(
-                    f"nonce already consumed at t={state.consumed_at} for tx={tx_id.hex()}"
-                )
+                raise ReplayError(f"nonce already consumed at t={state.consumed_at} for tx={tx_id.hex()}")
             state.consumed = True
             state.consumed_at = now
             logger.info(
@@ -273,9 +263,7 @@ class NonceStore:
             return {
                 "transactions": len(self._tx),
                 "total_nonces": sum(len(t.nonces) for t in self._tx.values()),
-                "consumed_nonces": sum(
-                    1 for t in self._tx.values() for n in t.nonces.values() if n.consumed
-                ),
+                "consumed_nonces": sum(1 for t in self._tx.values() for n in t.nonces.values() if n.consumed),
             }
 
     # ── Internals ─────────────────────────────────────────────────────────────

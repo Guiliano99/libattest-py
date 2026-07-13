@@ -86,9 +86,7 @@ def test_tpm_name_matches_pytss_get_name():
     from libattest.formats.tpm.tpm_name import compute_tpm_name
 
     subj = ec.generate_private_key(ec.SECP256R1())
-    pem = subj.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    )
+    pem = subj.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
     b = TPM2B_PUBLIC.from_pem(pem, nameAlg=TPM2_ALG.SHA256, objectAttributes=STRONG_SUBJECT_ATTRS)
     assert compute_tpm_name(b.publicArea.marshal()) == bytes(b.get_name())
 
@@ -150,9 +148,7 @@ def test_forged_proof_of_possession_is_rejected():
     evidence = attester.produce(_NONCE)
 
     attacker = ec.generate_private_key(ec.SECP256R1())
-    forged = dataclasses.replace(
-        evidence, pop_signature=attacker.sign(_NONCE, ec.ECDSA(hashes.SHA256()))
-    )
+    forged = dataclasses.replace(evidence, pop_signature=attacker.sign(_NONCE, ec.ECDSA(hashes.SHA256())))
 
     result = KeyBindingVerifier().appraise(forged, expected_nonce=_NONCE, policy=_POLICY)
     assert not result.accepted

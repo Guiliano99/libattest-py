@@ -15,6 +15,7 @@ References
 ----------
 TCG TPM 2.0 Library Part 1: Architecture, §16 (Name)
 TCG TPM 2.0 Library Part 2: Structures, §12.2.4 (TPMT_PUBLIC)
+
 """
 
 from __future__ import annotations
@@ -59,15 +60,12 @@ def compute_tpm_name(tpmt_public: bytes) -> bytes:
 
     """
     if len(tpmt_public) < 4:
-        raise ValueError(
-            f"TPMT_PUBLIC too short to contain nameAlg: {len(tpmt_public)} bytes"
-        )
+        raise ValueError(f"TPMT_PUBLIC too short to contain nameAlg: {len(tpmt_public)} bytes")
     name_alg = struct.unpack_from(">H", tpmt_public, 2)[0]
     hash_name = _HASH_FOR_ALG.get(name_alg)
     if hash_name is None:
         raise ValueError(
-            f"Unsupported TPMT_PUBLIC.nameAlg: {name_alg:#06x} "
-            f"(supported: {[hex(k) for k in _HASH_FOR_ALG]})"
+            f"Unsupported TPMT_PUBLIC.nameAlg: {name_alg:#06x} (supported: {[hex(k) for k in _HASH_FOR_ALG]})"
         )
     digest = hashlib.new(hash_name, tpmt_public).digest()
     return struct.pack(">H", name_alg) + digest
