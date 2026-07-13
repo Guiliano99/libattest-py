@@ -45,7 +45,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
-from pyasn1.codec.der import decoder as der_decoder
+from pyasn1.codec.ber import decoder as ber_decoder
 from pyasn1.type import univ
 from tpm2_pytss import (
     ESAPI,
@@ -106,13 +106,22 @@ def _read_tss2_private_key_pem(path: str) -> Tuple[int, TPM2B_PUBLIC, TPM2B_PRIV
     trailing fields (policy, secret, authPolicy, description, rsaParent) are
     ignored — decoded schema-less (no fixed pyasn1 spec) precisely so a
     strict component-count check doesn't reject them.
+
+    Decoded with the *lenient* BER decoder, not DER: tpm2-openssl (pinned
+    upstream, no deviation allowed) encodes the optional ``emptyAuth``
+    BOOLEAN as ``0x01`` for TRUE, which is valid BER but violates DER's
+    canonical 0xFF/0x00 requirement — pyasn1's strict DER decoder rejects it
+    with ``PyAsn1Error: Unexpected Boolean payload: 1``. This PEM is
+    third-party input we only read, never re-emit, so leniency here carries
+    no interop or security cost (a boolean's truth value isn't ambiguous
+    across BER encodings; only the encoded byte varies).
     """
     match = _PEM_RE.search(Path(path).read_bytes())
     if match is None or match.group("label") != _TSS2_PEM_LABEL:
         raise ValueError(f"expected a {_TSS2_PEM_LABEL.decode()!r} PEM at {path}")
     der = base64.b64decode(re.sub(rb"\s+", b"", match.group("body")))
 
-    fields, rest = der_decoder.decode(der)
+    fields, rest = ber_decoder.decode(der)
     if rest:
         raise ValueError(f"{path}: trailing bytes after TSSPrivKey DER")
     # fields[0] = type OID (ignored); fields[1] is emptyAuth (Boolean) only
