@@ -18,10 +18,12 @@ from collections.abc import Callable
 from typing import TypeAlias
 
 from pyasn1.type import base, univ
+from pyasn1_alt_modules import rfc5280
 
 from libattest.asn1_utils import try_decode_pyasn1
-from libattest.formats.eareat_hpke import resolve_evidence_enc_oid
+from libattest.formats.eareat_hpke import EVIDENCE_ENC_PARAMS_OID, resolve_evidence_enc_oid
 from libattest.formats.key_attest_pop import (
+    KeyAttestChall,
     KeyAttestEvidence,
     KeyAttestResp,
     resolve_key_attest_evidence_oid,
@@ -41,6 +43,7 @@ StatementStructure: TypeAlias = type[base.Asn1Item]
 
 NONCE_REQUEST_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     resolve_tpm_pcr_selection_oid(): TPM20QuoteReqInfoASN1,
+    resolve_key_attest_evidence_oid(): KeyAttestChall,
 }
 
 NONCE_RESPONSE_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
@@ -48,6 +51,7 @@ NONCE_RESPONSE_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     str(id_tpm20_quote_res): TPM20QuoteRespInfoASN1,
     str(id_tcg_attest_quote): TPM20QuoteRespInfoASN1,
     resolve_key_attest_evidence_oid(): KeyAttestResp,
+    EVIDENCE_ENC_PARAMS_OID: rfc5280.SubjectPublicKeyInfo,
 }
 
 ATTESTATION_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {

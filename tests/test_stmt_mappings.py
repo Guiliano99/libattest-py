@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 from pyasn1.type import univ
+from pyasn1_alt_modules import rfc5280
 
-from libattest.formats.eareat_hpke import resolve_evidence_enc_oid
+from libattest.formats.eareat_hpke import EVIDENCE_ENC_PARAMS_OID, resolve_evidence_enc_oid
 from libattest.formats.key_attest_pop import (
+    KeyAttestChall,
     KeyAttestEvidence,
     KeyAttestResp,
     resolve_key_attest_evidence_oid,
@@ -73,3 +75,13 @@ def test_key_attestation_and_encrypted_evidence_oids_map_to_their_asn1_structure
     assert ATTESTATION_STATEMENT_STRUCTURES[key_attest_oid] is KeyAttestEvidence
     assert ATTESTATION_STATEMENT_STRUCTURES[evidence_enc_oid] is univ.OctetString
     assert ATTESTATION_STATEMENT_STRUCTURES[str(ID_PE_CMW)] is CMW
+
+
+def test_key_attest_chall_and_evidence_enc_params_oids_map_to_their_asn1_structures() -> None:
+    """GIVEN the KeyAttestChall reqInfo OID and the HPKE params respInfo OID THEN they resolve."""
+    key_attest_oid = resolve_key_attest_evidence_oid()
+
+    assert NONCE_REQUEST_STATEMENT_STRUCTURES[key_attest_oid] is KeyAttestChall
+    assert get_nonce_request_statement_structure(key_attest_oid) is KeyAttestChall
+    assert NONCE_RESPONSE_STATEMENT_STRUCTURES[EVIDENCE_ENC_PARAMS_OID] is rfc5280.SubjectPublicKeyInfo
+    assert get_nonce_response_statement_structure(EVIDENCE_ENC_PARAMS_OID) is rfc5280.SubjectPublicKeyInfo
