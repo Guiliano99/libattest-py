@@ -31,6 +31,7 @@ from libattest.formats.key_attest_pop import (
 from libattest.formats.tpm import (
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
+    decode_tpm20_quote_req_info_asn1,
     id_tpm20_quote_res,
 )
 from libattest.formats.tpm.pcr_selection import resolve_tpm_pcr_selection_oid
@@ -85,9 +86,22 @@ def nonce_request_statement_decoders() -> dict[str, StatementDecoder]:
     over the registered structure.
     """
     return {
-        oid: (lambda der, spec=structure: try_decode_pyasn1(der, spec))
+        oid: _request_decoder_for(structure)
         for oid, structure in NONCE_REQUEST_STATEMENT_STRUCTURES.items()
     }
+
+
+def _request_decoder_for(structure: StatementStructure) -> StatementDecoder:
+    """Pick a reqInfo decoder for *structure*.
+
+    ``TPM20QuoteReqInfoASN1``'s two OPTIONAL fields share the universal SEQUENCE
+    tag and cannot be schema-decoded (X.680 §8), so it routes through the
+    inner-tag disambiguating object decoder; every other structure decodes
+    directly via :func:`~libattest.asn1_utils.try_decode_pyasn1`.
+    """
+    if structure is TPM20QuoteReqInfoASN1:
+        return decode_tpm20_quote_req_info_asn1
+    return lambda der, spec=structure: try_decode_pyasn1(der, spec)
 
 
 def get_nonce_request_statement_decoder(

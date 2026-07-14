@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from pyasn1.type import char, constraint, namedtype, tag, univ
+from pyasn1.type import char, constraint, namedtype, univ
 
 from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 
@@ -16,6 +16,13 @@ id_tpm20_quote_res = univ.ObjectIdentifier("1.2.3.4.6")
 
 _PCR_INDEX_MAX = 23  # Hardware TPMs expose 24 PCRs per bank (indices 0..23)
 _TPM_ALG_ID_MAX = 0xFFFF
+
+# TPM20QuoteReqInfo's two OPTIONAL fields share the universal SEQUENCE tag, so
+# schema-driven decode cannot tell them apart (X.680 §8). They are disambiguated
+# by their inner element type: certificateName wraps UTF8String, supportedHashAlgo
+# wraps INTEGER.
+_UTF8_TAG_SET = char.UTF8String().tagSet
+_INTEGER_TAG_SET = univ.Integer().tagSet
 
 
 class TPMAlgId(univ.Integer):
@@ -43,30 +50,24 @@ class _PCRIndexSequence(univ.SequenceOf):
 
 
 class TPM20QuoteReqInfoASN1(univ.Sequence):
-    """TPM20QuoteReqInfo ::= SEQUENCE { certificateName [0], supportedHashAlgo [1] }.
+    """TPM20QuoteReqInfo ::= SEQUENCE { certificateName, supportedHashAlgo }.
 
-    Both OPTIONAL fields are IMPLICIT context-tagged (0/1) so pyasn1's
-    automatic named-type decode can disambiguate them; without distinguishing
-    tags they'd share the same universal SEQUENCE tag and be structurally
-    undecodable (ASN.1 X.680 SS8: ambiguous OPTIONAL SEQUENCE components
-    require distinguishing tags). This changed the wire encoding from the
-    historical untagged form -- see
-    docs/adr/0003-asn1-utils-and-strict-der-decoding.md.
+    Both OPTIONAL fields carry their natural universal ``SEQUENCE OF`` tag —
+    matching the historical untagged wire form that the gencmpclient C side
+    (``i2d_TPM20_QUOTE_REQ_INFO``) emits, so DER produced by either side
+    round-trips through the other. This reverts the IMPLICIT ``[0]``/``[1]``
+    retag of docs/adr/0003 (which had diverged from the C wire): the two
+    fields share the universal SEQUENCE tag but have distinct *inner* element
+    types (``certificateName`` is ``SEQUENCE OF UTF8String``, ``supportedHashAlgo``
+    is ``SEQUENCE OF INTEGER``), so a message carrying both — the shape every
+    demo sends — decodes unambiguously. (A message omitting ``certificateName``
+    while carrying ``supportedHashAlgo`` is the one theoretically ambiguous
+    case, per X.680 §8; no producer emits it.)
     """
 
     componentType = namedtype.NamedTypes(
-        namedtype.OptionalNamedType(
-            "certificateName",
-            _CertificateNameSequence().subtype(
-                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 0)
-            ),
-        ),
-        namedtype.OptionalNamedType(
-            "supportedHashAlgo",
-            _TPMAlgIdSequence().subtype(
-                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 1)
-            ),
-        ),
+        namedtype.OptionalNamedType("certificateName", _CertificateNameSequence()),
+        namedtype.OptionalNamedType("supportedHashAlgo", _TPMAlgIdSequence()),
     )
 
 
@@ -126,6 +127,20 @@ def _validate_pcr_selection(pcr_selection: Iterable[int]) -> list[int]:
     return values
 
 
+def _build_req_info(names: list[str] | None, algos: list[int] | None) -> TPM20QuoteReqInfoASN1:
+    """Populate a :class:`TPM20QuoteReqInfoASN1` from validated names/algos."""
+    if names is None and algos is None:
+        raise ValueError("TPM20QuoteReqInfo: at least one optional field must be present")
+    value = TPM20QuoteReqInfoASN1()
+    if names is not None:
+        for name in names:
+            value["certificateName"].append(char.UTF8String(name))
+    if algos is not None:
+        for hash_alg_id in algos:
+            value["supportedHashAlgo"].append(TPMAlgId(hash_alg_id))
+    return value
+
+
 def encode_tpm20_quote_req_info(
     *,
     certificate_names: Iterable[str] | None = None,
@@ -134,17 +149,7 @@ def encode_tpm20_quote_req_info(
     """DER-encode ``TPM20QuoteReqInfo``."""
     names = _validate_certificate_names(certificate_names)
     algos = _validate_hash_alg_ids(supported_hash_algos)
-    if names is None and algos is None:
-        raise ValueError("TPM20QuoteReqInfo: at least one optional field must be present")
-
-    value = TPM20QuoteReqInfoASN1()
-    if names is not None:
-        for name in names:
-            value["certificateName"].append(char.UTF8String(name))
-    if algos is not None:
-        for hash_alg_id in algos:
-            value["supportedHashAlgo"].append(TPMAlgId(hash_alg_id))
-    return encode_to_der(value)
+    return encode_to_der(_build_req_info(names, algos))
 
 
 def encode_tpm20_quote_resp_info(
@@ -168,29 +173,55 @@ def encode_tpm20_quote_resp_info(
     return encode_to_der(value)
 
 
+def _decode_request_component(component: univ.SequenceOf) -> tuple[list[str] | None, list[int] | None]:
+    """Disambiguate one universal ``SEQUENCE OF`` reqInfo field by its inner tag."""
+    if not component.isValue or not len(component):
+        raise ValueError("TPM20QuoteReqInfo: optional sequence fields must not be empty")
+    first_value = component.getComponentByPosition(0)
+    if first_value.tagSet == _UTF8_TAG_SET:
+        return _validate_certificate_names(str(entry) for entry in component), None
+    if first_value.tagSet == _INTEGER_TAG_SET:
+        return None, _validate_hash_alg_ids(int(entry) for entry in component)
+    raise ValueError(f"TPM20QuoteReqInfo: unexpected inner tag {first_value.tagSet}")
+
+
 def decode_tpm20_quote_req_info(
     der: bytes | bytearray | univ.Any,
 ) -> tuple[list[str] | None, list[int] | None]:
-    """Decode ``TPM20QuoteReqInfo``.
+    """Decode ``TPM20QuoteReqInfo`` into ``(certificate_names, supported_hash_algos)``.
 
-    Fields must appear in canonical (declared) SEQUENCE order, per DER.
+    The two OPTIONAL fields share the universal SEQUENCE tag, so this decodes
+    the outer SEQUENCE generically and disambiguates each component by its inner
+    element type (UTF8String vs INTEGER) — schema-driven decode cannot (X.680 §8).
     """
-    value = try_decode_pyasn1(der, TPM20QuoteReqInfoASN1)
+    value = try_decode_pyasn1(der, univ.Sequence)
 
-    names = (
-        _validate_certificate_names(str(entry) for entry in value["certificateName"])
-        if value["certificateName"].isValue
-        else None
-    )
-    algos = (
-        _validate_hash_alg_ids(int(entry) for entry in value["supportedHashAlgo"])
-        if value["supportedHashAlgo"].isValue
-        else None
-    )
+    names: list[str] | None = None
+    algos: list[int] | None = None
+    for index in range(len(value)):
+        component_names, component_algos = _decode_request_component(value.getComponentByPosition(index))
+        if component_names is not None:
+            if names is not None:
+                raise ValueError("TPM20QuoteReqInfo: duplicate certificateName sequence")
+            names = component_names
+        if component_algos is not None:
+            if algos is not None:
+                raise ValueError("TPM20QuoteReqInfo: duplicate supportedHashAlgo sequence")
+            algos = component_algos
 
     if names is None and algos is None:
         raise ValueError("TPM20QuoteReqInfo: at least one optional field must be present")
     return names, algos
+
+
+def decode_tpm20_quote_req_info_asn1(der: bytes | bytearray | univ.Any) -> TPM20QuoteReqInfoASN1:
+    """Decode ``TPM20QuoteReqInfo`` into a populated pyasn1 object (for display).
+
+    Same manual disambiguation as :func:`decode_tpm20_quote_req_info`, but rebuilds
+    a :class:`TPM20QuoteReqInfoASN1` so callers (the CMP CLI pretty-printer) can
+    ``prettyPrint()`` the named fields instead of the raw ANY payload.
+    """
+    return _build_req_info(*decode_tpm20_quote_req_info(der))
 
 
 def decode_tpm20_quote_resp_info(
@@ -250,6 +281,7 @@ __all__ = [
     "TPM20QuoteRespInfoASN1",
     "TPMAlgId",
     "decode_tpm20_quote_req_info",
+    "decode_tpm20_quote_req_info_asn1",
     "decode_tpm20_quote_resp_info",
     "encode_tpm20_quote_req_info",
     "encode_tpm20_quote_resp_info",

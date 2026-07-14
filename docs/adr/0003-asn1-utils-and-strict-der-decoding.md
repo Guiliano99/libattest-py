@@ -5,6 +5,21 @@ SPDX-License-Identifier: Apache-2.0
 
 # Shared strict-DER codec in `libattest.asn1_utils`; TPM20QuoteReqInfo gains implicit tags
 
+> **PARTIALLY REVERTED (2026-07-14):** The `TPM20QuoteReqInfo` `[0]`/`[1]` IMPLICIT
+> retag below was **reverted to the historical universal `SEQUENCE OF` form**.
+> Rationale: the gencmpclient C encoder (`i2d_TPM20_QUOTE_REQ_INFO`) still emits the
+> untagged form, and retagging the C side never happened, so the retag left
+> libattest unable to decode the reqInfo every demo actually sends (the new
+> `cli.py` / `parse_genm_pkimessage` crashed on it). `TPM20QuoteReqInfoASN1` now
+> carries universal tags again; the two OPTIONAL fields are disambiguated by their
+> inner element type (`UTF8String` vs `INTEGER`) in `decode_tpm20_quote_req_info`
+> (+ `decode_tpm20_quote_req_info_asn1` for a display object), restoring the
+> manual-disambiguation decoder this ADR had removed. The `asn1_utils` codec
+> consolidation (the ADR's primary decision) stands. Golden vector
+> (`test_tpm20_quote_golden.py::REQ_GOLDEN`) updated to the universal form; the
+> byte-for-byte C interop guarantee is now restored rather than pending a C retag.
+
+
 Every format module that decodes a Statement (`AttestationStatement.stmt`,
 `reqInfo`, or `respInfo` — see `CONTEXT.md`) had its own copy of "DER-decode
 against a pyasn1 spec, reject trailing bytes, wrap pyasn1's exception zoo as

@@ -21,15 +21,14 @@ from libattest.formats.tpm.quote_profile import (
     encode_tpm20_quote_resp_info,
 )
 
-# TPM20QuoteReqInfo.certificateName/supportedHashAlgo are now [0]/[1] IMPLICIT
-# tagged (see docs/adr/0003-asn1-utils-and-strict-der-decoding.md) so pyasn1 can
-# automatically disambiguate the two OPTIONAL fields, which previously shared
-# the same untagged SEQUENCE tag. This changed the wire bytes from the
-# gencmpclient C encoder's historical untagged-SEQUENCE-OF form; the vector
-# below is Python-only until the C side (i2d_TPM20_QUOTE_REQ_INFO) is
-# retagged to match — the byte-for-byte cross-language guarantee is broken
-# until then.
-REQ_GOLDEN = bytes.fromhex("300ba0040c02616ba10302010b")
+# TPM20QuoteReqInfo.certificateName/supportedHashAlgo carry their natural
+# universal SEQUENCE-OF tags, matching the gencmpclient C encoder's
+# historical untagged form (i2d_TPM20_QUOTE_REQ_INFO) — byte-for-byte
+# cross-language interop. The two OPTIONAL fields share the SEQUENCE tag but
+# have distinct inner element types (UTF8String vs INTEGER); a message
+# carrying both (the shape every demo sends) decodes unambiguously. See
+# docs/adr/0003-asn1-utils-and-strict-der-decoding.md (revert note).
+REQ_GOLDEN = bytes.fromhex("300b30040c02616b300302010b")
 # Emitted by the gencmpclient C smoke (scratchpad/g2build), untagged SEQUENCE OF.
 RESP_GOLDEN = bytes.fromhex("30180c02616b300f02010002010102010202010302010402010b")
 
