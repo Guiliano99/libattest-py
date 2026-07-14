@@ -7,17 +7,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from pyasn1.codec.der import decoder as der_decoder
-from pyasn1.codec.der import encoder as der_encoder
-from pyasn1.type import char, constraint, namedtype, univ
+from pyasn1.type import char, constraint, namedtype, tag, univ
+
+from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 
 id_tpm20_quote_req = univ.ObjectIdentifier("1.2.3.4.5")
 id_tpm20_quote_res = univ.ObjectIdentifier("1.2.3.4.6")
 
 _PCR_INDEX_MAX = 23  # Hardware TPMs expose 24 PCRs per bank (indices 0..23)
 _TPM_ALG_ID_MAX = 0xFFFF
-_INTEGER_TAG_SET = univ.Integer().tagSet
-_UTF8_TAG_SET = char.UTF8String().tagSet
 
 
 class TPMAlgId(univ.Integer):
@@ -45,11 +43,30 @@ class _PCRIndexSequence(univ.SequenceOf):
 
 
 class TPM20QuoteReqInfoASN1(univ.Sequence):
-    """TPM20QuoteReqInfo ::= SEQUENCE { certificateName, supportedHashAlgo }."""
+    """TPM20QuoteReqInfo ::= SEQUENCE { certificateName [0], supportedHashAlgo [1] }.
+
+    Both OPTIONAL fields are IMPLICIT context-tagged (0/1) so pyasn1's
+    automatic named-type decode can disambiguate them; without distinguishing
+    tags they'd share the same universal SEQUENCE tag and be structurally
+    undecodable (ASN.1 X.680 SS8: ambiguous OPTIONAL SEQUENCE components
+    require distinguishing tags). This changed the wire encoding from the
+    historical untagged form -- see
+    docs/adr/0003-asn1-utils-and-strict-der-decoding.md.
+    """
 
     componentType = namedtype.NamedTypes(
-        namedtype.OptionalNamedType("certificateName", _CertificateNameSequence()),
-        namedtype.OptionalNamedType("supportedHashAlgo", _TPMAlgIdSequence()),
+        namedtype.OptionalNamedType(
+            "certificateName",
+            _CertificateNameSequence().subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 0)
+            ),
+        ),
+        namedtype.OptionalNamedType(
+            "supportedHashAlgo",
+            _TPMAlgIdSequence().subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 1)
+            ),
+        ),
     )
 
 
@@ -109,17 +126,6 @@ def _validate_pcr_selection(pcr_selection: Iterable[int]) -> list[int]:
     return values
 
 
-def _decode_request_component(component: univ.SequenceOf) -> tuple[list[str] | None, list[int] | None]:
-    if not component.isValue or not len(component):
-        raise ValueError("TPM20QuoteReqInfo: optional sequence fields must not be empty")
-    first_value = component.getComponentByPosition(0)
-    if first_value.tagSet == _UTF8_TAG_SET:
-        return _validate_certificate_names(str(entry) for entry in component), None
-    if first_value.tagSet == _INTEGER_TAG_SET:
-        return None, _validate_hash_alg_ids(int(entry) for entry in component)
-    raise ValueError(f"TPM20QuoteReqInfo: unexpected inner tag {first_value.tagSet}")
-
-
 def encode_tpm20_quote_req_info(
     *,
     certificate_names: Iterable[str] | None = None,
@@ -138,7 +144,7 @@ def encode_tpm20_quote_req_info(
     if algos is not None:
         for hash_alg_id in algos:
             value["supportedHashAlgo"].append(TPMAlgId(hash_alg_id))
-    return der_encoder.encode(value)
+    return encode_to_der(value)
 
 
 def encode_tpm20_quote_resp_info(
@@ -159,33 +165,28 @@ def encode_tpm20_quote_resp_info(
     for pcr_index in pcrs:
         value["pcrSelection"].append(PCRIndex(pcr_index))
     value["hashAlgo"] = TPMAlgId(hash_alg_id)
-    return der_encoder.encode(value)
+    return encode_to_der(value)
 
 
 def decode_tpm20_quote_req_info(
     der: bytes | bytearray | univ.Any,
 ) -> tuple[list[str] | None, list[int] | None]:
-    """Decode ``TPM20QuoteReqInfo``."""
-    try:
-        value, rest = der_decoder.decode(bytes(der), asn1Spec=univ.Sequence())
-    except Exception as exc:
-        raise ValueError(f"TPM20QuoteReqInfo: cannot decode DER: {exc}") from exc
-    if rest:
-        raise ValueError("TPM20QuoteReqInfo: trailing bytes after DER value")
+    """Decode ``TPM20QuoteReqInfo``.
 
-    names: list[str] | None = None
-    algos: list[int] | None = None
-    for index in range(len(value)):
-        component = value.getComponentByPosition(index)
-        component_names, component_algos = _decode_request_component(component)
-        if component_names is not None:
-            if names is not None:
-                raise ValueError("TPM20QuoteReqInfo: duplicate certificateName sequence")
-            names = component_names
-        if component_algos is not None:
-            if algos is not None:
-                raise ValueError("TPM20QuoteReqInfo: duplicate supportedHashAlgo sequence")
-            algos = component_algos
+    Fields must appear in canonical (declared) SEQUENCE order, per DER.
+    """
+    value = try_decode_pyasn1(der, TPM20QuoteReqInfoASN1)
+
+    names = (
+        _validate_certificate_names(str(entry) for entry in value["certificateName"])
+        if value["certificateName"].isValue
+        else None
+    )
+    algos = (
+        _validate_hash_alg_ids(int(entry) for entry in value["supportedHashAlgo"])
+        if value["supportedHashAlgo"].isValue
+        else None
+    )
 
     if names is None and algos is None:
         raise ValueError("TPM20QuoteReqInfo: at least one optional field must be present")
@@ -196,12 +197,7 @@ def decode_tpm20_quote_resp_info(
     der: bytes | bytearray | univ.Any,
 ) -> tuple[str | None, list[int], int]:
     """Decode ``TPM20QuoteRespInfo``."""
-    try:
-        value, rest = der_decoder.decode(bytes(der), asn1Spec=TPM20QuoteRespInfoASN1())
-    except Exception as exc:
-        raise ValueError(f"TPM20QuoteRespInfo: cannot decode DER: {exc}") from exc
-    if rest:
-        raise ValueError("TPM20QuoteRespInfo: trailing bytes after DER value")
+    value = try_decode_pyasn1(der, TPM20QuoteRespInfoASN1)
 
     certificate_name = str(value["certificateName"]) if value["certificateName"].isValue else None
     pcr_selection = _validate_pcr_selection(int(pcr_index) for pcr_index in value["pcrSelection"])

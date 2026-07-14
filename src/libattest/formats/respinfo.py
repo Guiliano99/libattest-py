@@ -21,6 +21,11 @@ from typing import Any
 
 from pyasn1.type import univ
 
+from libattest.formats.key_attest_pop import (
+    key_attest_resp_from_json,
+    key_attest_resp_to_json,
+    resolve_key_attest_evidence_oid,
+)
 from libattest.formats.tpm.pcr_selection import resolve_tpm_pcr_selection_oid
 from libattest.formats.tpm.quote_profile import (
     decode_tpm20_quote_resp_info,
@@ -121,6 +126,11 @@ def _build_default_registry() -> RespInfoRegistry:
         id_tcg_attest_quote,
         tpm20_quote_resp_info_to_json,
         tpm20_quote_resp_info_from_json,
+    )
+    registry.register(
+        resolve_key_attest_evidence_oid(),
+        key_attest_resp_to_json,
+        key_attest_resp_from_json,
     )
     return registry
 

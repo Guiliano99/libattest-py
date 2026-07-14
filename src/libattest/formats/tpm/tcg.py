@@ -4,8 +4,9 @@
 
 """TCG TPM attestation structures."""
 
-from pyasn1.codec.der import decoder as der_decoder
 from pyasn1.type import namedtype, univ
+
+from libattest.asn1_utils import try_decode_pyasn1
 
 id_tcg_attest_certify = univ.ObjectIdentifier("2.23.133.20.1")
 id_tcg_attest_quote = univ.ObjectIdentifier("2.23.133.20.2")
@@ -50,14 +51,7 @@ def decode_tcg_attest_certify(der: bytes | bytearray | univ.Any) -> TcgAttestCer
         On malformed DER or trailing bytes after the value.
 
     """
-    data = bytes(der)
-    try:
-        value, rest = der_decoder.decode(data, asn1Spec=TcgAttestCertify())
-    except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
-        raise ValueError(f"TcgAttestCertify: cannot decode DER: {exc}") from exc
-    if rest:
-        raise ValueError("TcgAttestCertify: trailing bytes after DER value")
-    return value
+    return try_decode_pyasn1(der, TcgAttestCertify)
 
 
 __all__ = [

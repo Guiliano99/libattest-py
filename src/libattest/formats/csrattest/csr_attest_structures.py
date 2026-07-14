@@ -15,10 +15,10 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TypeAlias
 
-from pyasn1.codec.der import decoder as der_decoder
-from pyasn1.codec.der import encoder
 from pyasn1.type import constraint, namedtype, tag, univ
 from pyasn1_alt_modules import rfc9480
+
+from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 
 id_aa_attestation = univ.ObjectIdentifier("1.2.840.113549.1.9.16.2.59")
 
@@ -114,7 +114,7 @@ def prepare_opaque_attestation_statement(
     open type.  Use :func:`prepare_asn1_attestation_statement` when the
     evidence is already a DER-encoded ASN.1 structure.
     """
-    wrapped_payload = encoder.encode(univ.OctetString(payload))
+    wrapped_payload = encode_to_der(univ.OctetString(payload))
     return prepare_attestation_statement(stmt_id, wrapped_payload)
 
 
@@ -213,9 +213,8 @@ def pem_chain_to_cmp_certs(pem: str | Path) -> list[rfc9480.CMPCertificate]:
     Raises
     ------
     ValueError
-        If *pem* contains no certificate blocks.
-    pyasn1.error.SubstrateUnderrunError
-        If a DER block cannot be decoded as an X.509 certificate.
+        If *pem* contains no certificate blocks, or a block cannot be decoded
+        as an X.509 certificate.
 
     """
     pem_text = Path(pem).read_text() if isinstance(pem, Path) else pem
@@ -225,7 +224,7 @@ def pem_chain_to_cmp_certs(pem: str | Path) -> list[rfc9480.CMPCertificate]:
     certs = []
     for b64 in matches:
         der = base64.b64decode(b64)
-        cert, _ = der_decoder.decode(der, asn1Spec=rfc9480.CMPCertificate())
+        cert = try_decode_pyasn1(der, rfc9480.CMPCertificate)
         certs.append(cert)
     return certs
 
@@ -271,7 +270,7 @@ def decode_attestation_bundle(der: bytes | bytearray | univ.Any) -> AttestationB
 
     The single public entry point for parsing an attestation bundle so callers
     (MockCA, verifier) reuse the library codec instead of importing the pyasn1
-    spec and calling ``der_decoder`` themselves.
+    spec and calling the decoder themselves.
 
     Raises
     ------
@@ -279,14 +278,7 @@ def decode_attestation_bundle(der: bytes | bytearray | univ.Any) -> AttestationB
         On malformed DER or trailing bytes after the value.
 
     """
-    data = bytes(der)
-    try:
-        bundle, rest = der_decoder.decode(data, asn1Spec=AttestationBundle())
-    except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
-        raise ValueError(f"AttestationBundle: cannot decode DER: {exc}") from exc
-    if rest:
-        raise ValueError("AttestationBundle: trailing bytes after DER value")
-    return bundle
+    return try_decode_pyasn1(der, AttestationBundle)
 
 
 def decode_attestation_statement(der: bytes | bytearray | univ.Any) -> AttestationStatement:
@@ -298,14 +290,7 @@ def decode_attestation_statement(der: bytes | bytearray | univ.Any) -> Attestati
         On malformed DER or trailing bytes after the value.
 
     """
-    data = bytes(der)
-    try:
-        statement, rest = der_decoder.decode(data, asn1Spec=AttestationStatement())
-    except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
-        raise ValueError(f"AttestationStatement: cannot decode DER: {exc}") from exc
-    if rest:
-        raise ValueError("AttestationStatement: trailing bytes after DER value")
-    return statement
+    return try_decode_pyasn1(der, AttestationStatement)
 
 
 def encode_oid_der(oid: str | univ.ObjectIdentifier) -> bytes:
@@ -317,7 +302,7 @@ def encode_oid_der(oid: str | univ.ObjectIdentifier) -> bytes:
     guarantees that without either MockCA handler importing ``pyasn1`` directly.
     """
     obj = oid if isinstance(oid, univ.ObjectIdentifier) else univ.ObjectIdentifier(oid)
-    return bytes(encoder.encode(obj))
+    return encode_to_der(obj)
 
 
 def unwrap_attestation_statement(stmt_raw: bytes) -> tuple[bytes, bool]:
@@ -353,9 +338,6 @@ def unwrap_attestation_statement(stmt_raw: bytes) -> tuple[bytes, bool]:
 
     """
     if stmt_raw[:1] == b"\x04":
-        try:
-            inner, _rest = der_decoder.decode(stmt_raw, asn1Spec=univ.OctetString())
-        except Exception as exc:  # pyasn1 raises PyAsn1Error subclasses
-            raise ValueError(f"AttestationStatement.stmt: cannot decode OCTET STRING: {exc}") from exc
+        inner = try_decode_pyasn1(stmt_raw, univ.OctetString)
         return bytes(inner), True
     return stmt_raw, False

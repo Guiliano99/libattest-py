@@ -37,11 +37,10 @@ import base64
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from pyasn1.codec.der import decoder as _der_decoder
-from pyasn1.codec.der import encoder as _der_encoder
 from pyasn1.type import namedtype, univ
 from pyasn1_alt_modules import rfc9480
 
+from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 from libattest.formats._oid_json import resolve_env_oid
 from libattest.formats.csrattest.csr_attest_structures import pem_chain_to_cmp_certs
 
@@ -141,34 +140,19 @@ def prepare_key_attest_evidence(
 # ── DER codecs ───────────────────────────────────────────────────────────────
 
 
-def encode_to_der(value: Any) -> bytes:
-    """DER-encode any pyasn1 structure."""
-    return bytes(_der_encoder.encode(value))
-
-
-def _decode_der(der: bytes, asn1_spec, name: str):
-    try:
-        decoded, rest = _der_decoder.decode(bytes(der), asn1Spec=asn1_spec)
-    except Exception as exc:  # noqa: BLE001 - pyasn1 raises PyAsn1Error subclasses
-        raise ValueError(f"failed to decode {name}: {exc}") from exc
-    if rest:
-        raise ValueError(f"trailing bytes after {name} SEQUENCE")
-    return decoded
-
-
 def decode_key_attest_chall(der: bytes) -> KeyAttestChall:
     """DER-decode bytes into a :class:`KeyAttestChall`."""
-    return _decode_der(der, KeyAttestChall(), "KeyAttestChall")
+    return try_decode_pyasn1(der, KeyAttestChall)
 
 
 def decode_key_attest_resp(der: bytes) -> KeyAttestResp:
     """DER-decode bytes into a :class:`KeyAttestResp`."""
-    return _decode_der(der, KeyAttestResp(), "KeyAttestResp")
+    return try_decode_pyasn1(der, KeyAttestResp)
 
 
 def decode_key_attest_evidence(der: bytes) -> KeyAttestEvidence:
     """DER-decode bytes into a :class:`KeyAttestEvidence`."""
-    return _decode_der(der, KeyAttestEvidence(), "KeyAttestEvidence")
+    return try_decode_pyasn1(der, KeyAttestEvidence)
 
 
 # ── JSON adapters (RA engine ↔ Verifier, the single translation point) ────────
@@ -188,7 +172,7 @@ def _decode_hex_field(data: Mapping[str, Any], key: str, owner: str) -> bytes:
 
 
 def _cert_to_pem(cert: rfc9480.CMPCertificate) -> str:
-    der = bytes(_der_encoder.encode(cert))
+    der = encode_to_der(cert)
     b64 = base64.b64encode(der).decode("ascii")
     body = "\n".join(b64[i : i + 64] for i in range(0, len(b64), 64))
     return f"-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n"
@@ -224,6 +208,15 @@ def key_attest_resp_from_json(data: Mapping[str, Any]) -> bytes:
     return encode_to_der(resp)
 
 
+def key_attest_resp_to_json(der: bytes | bytearray | univ.Any) -> dict[str, str]:
+    """Decode ``KeyAttestResp`` DER into verifier JSON with hexadecimal blob fields."""
+    resp = decode_key_attest_resp(bytes(der))
+    return {
+        "encSeed": bytes(resp["encSeed"]).hex(),
+        "encSecret": bytes(resp["encSecret"]).hex(),
+    }
+
+
 __all__ = [
     "DEFAULT_KEY_ATTEST_EVIDENCE_OID",
     "ID_KEY_ATTEST_EVIDENCE",
@@ -239,6 +232,7 @@ __all__ = [
     "encode_to_der",
     "key_attest_chall_to_json",
     "key_attest_resp_from_json",
+    "key_attest_resp_to_json",
     "prepare_key_attest_chall",
     "prepare_key_attest_evidence",
     "prepare_key_attest_resp",

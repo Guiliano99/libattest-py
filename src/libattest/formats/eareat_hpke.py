@@ -34,11 +34,11 @@ from typing import Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from pyasn1.codec.der import decoder as _der_decoder
-from pyasn1.codec.der import encoder as _der_encoder
 from pyasn1.type import univ
 
+from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 from libattest.formats import jose_hpke, jose_jws
+from libattest.formats._oid_json import resolve_env_oid
 from libattest.formats.csrattest import (
     NonceRequest,
     NonceRequestTypeInfo,
@@ -53,6 +53,7 @@ from libattest.x509 import decode_cmw_json_record, encode_cmw_json_record
 # AttestationStatement.type OID for HPKE-encrypted software evidence (distinct from the
 # plaintext software-evidence OID 1.3.6.1.4.1.99999.1 so the MockCA routes it to the
 # HPKE-capable verifier).
+EVIDENCE_ENC_OID_ENV: str = "EVIDENCE_ENC_OID"
 EVIDENCE_ENC_OID = "1.3.6.1.4.1.99999.10"
 # NonceRequest/NonceResponse.type OID identifying the HPKE evidence-encryption key exchange.
 EVIDENCE_ENC_PARAMS_OID = "1.3.6.1.4.1.99999.11"
@@ -60,6 +61,11 @@ EVIDENCE_ENC_PARAMS_OID = "1.3.6.1.4.1.99999.11"
 CMW_MEDIA_JOSE = "application/jose"
 CMW_TYPE_JOSE = 4  # CMW type indicator for a JOSE message (draft-ietf-rats-msg-wrap)
 DEFAULT_KID = "eareat-hpke-verifier"
+
+
+def resolve_evidence_enc_oid() -> str:
+    """Return the HPKE-encrypted evidence statement OID (env-overridable)."""
+    return resolve_env_oid(EVIDENCE_ENC_OID_ENV, EVIDENCE_ENC_OID)
 
 
 # ── HPKE recipient key <-> SPKI DER (the NonceResponse.respTypeInfo.respInfo payload)
@@ -107,7 +113,7 @@ def build_evidence_bundle(
 ) -> bytes:
     """Build the DER ``AttestationBundle`` carrying one HPKE-encrypted evidence statement."""
     statement = build_evidence_statement(eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid)
-    return _der_encoder.encode(prepare_attestation_bundle([statement]))
+    return encode_to_der(prepare_attestation_bundle([statement]))
 
 
 def sign_and_build_evidence_bundle(
@@ -158,7 +164,7 @@ def build_nonce_request(*, length: int | None = 32, type_oid: str = EVIDENCE_ENC
     type_info = NonceRequestTypeInfo()
     type_info["type"] = univ.ObjectIdentifier(type_oid)
     request["reqTypeInfo"] = type_info
-    return _der_encoder.encode(request)
+    return encode_to_der(request)
 
 
 def build_evidence_enc_nonce_response(
@@ -183,7 +189,7 @@ def build_evidence_enc_nonce_response(
     type_info["type"] = univ.ObjectIdentifier(type_oid)
     type_info["respInfo"] = univ.Any(hpke_key_to_spki_der(hpke_public_key))
     response["respTypeInfo"] = type_info
-    return _der_encoder.encode(response)
+    return encode_to_der(response)
 
 
 def parse_evidence_enc_nonce_response(
@@ -194,7 +200,7 @@ def parse_evidence_enc_nonce_response(
     ``hpke_public_key`` is ``None`` when the response carries no ``respInfo`` (e.g. a
     zero-length nonce meaning "no freshness proof required").
     """
-    response, _ = _der_decoder.decode(der, asn1Spec=NonceResponse())
+    response = try_decode_pyasn1(der, NonceResponse)
     nonce = bytes(response["nonce"])
     resp_type_info = response["respTypeInfo"]
     type_oid = str(resp_type_info["type"]) if resp_type_info.isValue else None
@@ -208,6 +214,7 @@ __all__ = [
     "CMW_MEDIA_JOSE",
     "CMW_TYPE_JOSE",
     "EVIDENCE_ENC_OID",
+    "EVIDENCE_ENC_OID_ENV",
     "EVIDENCE_ENC_PARAMS_OID",
     "build_evidence_bundle",
     "build_evidence_enc_nonce_response",
@@ -218,5 +225,6 @@ __all__ = [
     "hpke_key_from_spki_der",
     "hpke_key_to_spki_der",
     "parse_evidence_enc_nonce_response",
+    "resolve_evidence_enc_oid",
     "sign_and_build_evidence_bundle",
 ]

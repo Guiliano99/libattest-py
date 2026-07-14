@@ -61,9 +61,9 @@ import logging
 import warnings
 from typing import Optional, Union
 
-from pyasn1.codec.der import decoder as _der_decoder
-from pyasn1.codec.der import encoder as _der_encoder
 from pyasn1.type import char, namedtype, univ
+
+from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +84,10 @@ ID_PE_CMW_DOTTED: str = "1.3.6.1.5.5.7.1.35"
 class CMW(univ.Choice):
     """``CMW ::= CHOICE { json UTF8String, cbor OCTET STRING }``.
 
-    Use as a pyasn1 ``asn1Spec`` to decode a CMW extension value::
+    Use :func:`~libattest.asn1_utils.try_decode_pyasn1` to decode a CMW
+    extension value::
 
-        cmw, _ = pyasn1.codec.der.decoder.decode(extn_value_bytes, asn1Spec=CMW())
+        cmw = try_decode_pyasn1(extn_value_bytes, CMW)
         if cmw.getName() == "json":
             payload = str(cmw["json"]).encode("utf-8")
         else:
@@ -96,7 +97,7 @@ class CMW(univ.Choice):
 
         cmw = CMW()
         cmw.setComponentByName("cbor", univ.OctetString(my_cbor_bytes))
-        der = pyasn1.codec.der.encoder.encode(cmw)
+        der = encode_to_der(cmw)
     """
 
     componentType = namedtype.NamedTypes(
@@ -153,11 +154,7 @@ def parse_cmw_extension_value(extn_value: bytes) -> CMW:
 
     :raises ValueError: when the bytes do not decode as a CMW CHOICE.
     """
-    try:
-        decoded, _trailing = _der_decoder.decode(extn_value, asn1Spec=CMW())
-    except Exception as exc:  # noqa: BLE001 — pyasn1 raises various concrete types
-        raise ValueError(f"failed to decode CMW: {exc}") from exc
-    return decoded  # type: ignore[return-value]
+    return try_decode_pyasn1(extn_value, CMW)
 
 
 def validate_cmw_extension(
@@ -217,7 +214,7 @@ def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
     record = json.dumps(["application/eat+jwt", value_b64], separators=(",", ":"))
     cmw = CMW()
     cmw.setComponentByName("json", char.UTF8String(record))
-    return _der_encoder.encode(cmw)
+    return encode_to_der(cmw)
 
 
 def encode_cmw_json_record(media_type: str, value: str, cmw_type: int | None = None) -> bytes:
@@ -234,7 +231,7 @@ def encode_cmw_json_record(media_type: str, value: str, cmw_type: int | None = N
     record = [media_type, value] if cmw_type is None else [media_type, value, cmw_type]
     cmw = CMW()
     cmw.setComponentByName("json", char.UTF8String(json.dumps(record, separators=(",", ":"))))
-    return _der_encoder.encode(cmw)
+    return encode_to_der(cmw)
 
 
 def decode_cmw_json_record(der: bytes) -> tuple[str, str, Optional[int]]:
@@ -246,7 +243,7 @@ def decode_cmw_json_record(der: bytes) -> tuple[str, str, Optional[int]]:
 
     :raises ValueError: the bytes are not a CMW ``json`` record / malformed JSON.
     """
-    cmw, _ = _der_decoder.decode(der, asn1Spec=CMW())
+    cmw = try_decode_pyasn1(der, CMW)
     if cmw.getName() != "json":
         raise ValueError("CMW is not a json record (expected the UTF8String alternative)")
     record = json.loads(str(cmw["json"]))

@@ -10,10 +10,9 @@ from dataclasses import dataclass, field
 from typing import Union
 from urllib.parse import urlparse
 
-from pyasn1.codec.der import decoder as der_decoder
 from pyasn1.type import univ
 
-from libattest.formats.csrattest import AttestationBundle
+from libattest.formats.csrattest import AttestationBundle, decode_attestation_bundle
 from libattest.types import BundleVerifyResult, VerifyResult
 from libattest.verifier.base import AttestationVerifier
 from libattest.verifier.endpoints import VerifierEndpointConfig
@@ -317,9 +316,10 @@ class VerifierRouter:
             and the parallel list of route names that were dispatched to.
 
         """
-        decoded = bundle
         if isinstance(bundle, (bytes, bytearray)):
-            decoded, _ = der_decoder.decode(bytes(bundle), asn1Spec=AttestationBundle())
+            decoded = decode_attestation_bundle(bundle)
+        else:
+            decoded = bundle
 
         statements = list(decoded["attestations"])
         n = len(statements)

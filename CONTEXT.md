@@ -62,3 +62,13 @@ The draft-reddy-rats-key-binding claim describing how the Subject Key is
 protected (`extractable`, `never-extractable`, `sensitive`, `local`, `purpose`).
 When backed by a TPM, derived from the certified key's `TPMA_OBJECT` bits.
 _Avoid_: key properties, protection flags
+
+### Wire formats
+
+**Statement**:
+An OID-tagged ASN.1 `ANY` payload whose concrete pyasn1 type is selected
+purely by its accompanying OID — never by content inspection. Appears in
+three wire positions: `AttestationStatement.stmt` (carries Evidence),
+`NonceRequestTypeInfo.reqInfo`, and `NonceResponseTypeInfo.respInfo` (both
+CMP nonce-freshness handshake payloads, exchanged before Evidence exists).
+`_Avoid_`: payload, blob

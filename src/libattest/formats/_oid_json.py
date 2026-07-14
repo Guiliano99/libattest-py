@@ -15,8 +15,9 @@ import json
 import os
 from typing import Any, Mapping, TypeVar
 
-from pyasn1.codec.der import decoder, encoder
 from pyasn1.type import char, namedtype, univ
+
+from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
 
 
 def resolve_env_oid(env_name: str, default: str) -> str:
@@ -69,19 +70,14 @@ def decode_oid_json_value(value: univ.Sequence, *, expected_oid: str, name: str)
 
 def encode_oid_json_der(schema: type[OidUtf8Json], oid: str, payload: Mapping[str, Any]) -> bytes:
     """DER-encode a typed OID + UTF8String JSON value."""
-    return bytes(encoder.encode(prepare_oid_json_value(schema, oid, payload)))
+    return encode_to_der(prepare_oid_json_value(schema, oid, payload))
 
 
 def decode_oid_json_der(
     der: bytes | bytearray | univ.Any, schema: OidUtf8Json, *, expected_oid: str, name: str
 ) -> dict[str, Any]:
     """DER-decode a typed OID + UTF8String JSON value and return its payload."""
-    try:
-        decoded, rest = decoder.decode(bytes(der), asn1Spec=schema)
-    except Exception as exc:  # noqa: BLE001 - pyasn1 raises several concrete types
-        raise ValueError(f"{name}: DER did not decode: {exc}") from exc
-    if rest:
-        raise ValueError(f"{name}: trailing bytes after SEQUENCE")
+    decoded = try_decode_pyasn1(der, schema)
     return decode_oid_json_value(decoded, expected_oid=expected_oid, name=name)
 
 
