@@ -48,6 +48,7 @@ from libattest.formats.tpm.tcg import (
     id_tcg_attest_quote,
     prepare_tcg_attest_certify,
 )
+from libattest.stmt_log import log_statement
 
 _KINDS = ("quote", "certify", "key-attest")
 
@@ -155,6 +156,7 @@ def generate_tpm_evidence(
         signature=signature_wire_bytes,
         tpm_tpublic=third_field,
     )
+    log_statement("TcgAttestCertify", statement, str(type_oid))
     return der_encoder.encode(statement), str(type_oid)
 
 
@@ -190,7 +192,9 @@ def _generate_key_attest_evidence(
         tpm_tpublic=result.tpmt_public,
         key_attest_signature=pop_signature,
     )
-    return encode_to_der(evidence), resolve_key_attest_evidence_oid()
+    evidence_oid = resolve_key_attest_evidence_oid()
+    log_statement("KeyAttestEvidence", evidence, evidence_oid)
+    return encode_to_der(evidence), evidence_oid
 
 
 def build_key_attest_chall(tcti: str, ak_handle: int, ek_cert_chain: str) -> bytes:
@@ -212,6 +216,7 @@ def build_key_attest_chall(tcti: str, ak_handle: int, ek_cert_chain: str) -> byt
         ek_public = bytes(tpm.ek_public.marshal())
 
     chall = prepare_key_attest_chall(ak_name=ak_name, ek_public=ek_public, ek_cert_chain_pem=pem)
+    log_statement("KeyAttestChall", chall)
     return encode_to_der(chall)
 
 

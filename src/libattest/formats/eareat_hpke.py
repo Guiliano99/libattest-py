@@ -48,6 +48,7 @@ from libattest.formats.csrattest import (
     prepare_attestation_bundle,
     prepare_attestation_statement,
 )
+from libattest.stmt_log import log_statement
 from libattest.x509 import decode_cmw_json_record, encode_cmw_json_record
 
 # AttestationStatement.type OID for HPKE-encrypted software evidence (distinct from the
@@ -100,7 +101,9 @@ def build_evidence_statement(
     header = {"alg": jose_hpke.ALG, "kid": kid, "eat_nonce": jose_jws.b64u_encode(nonce)}
     jwe = jose_hpke.seal_integrated(eat_jws.encode("ascii"), header, recipient_hpke)
     cmw_der = encode_cmw_json_record(CMW_MEDIA_JOSE, jwe, CMW_TYPE_JOSE)
-    return prepare_attestation_statement(univ.ObjectIdentifier(statement_oid), cmw_der)
+    statement = prepare_attestation_statement(univ.ObjectIdentifier(statement_oid), cmw_der)
+    log_statement("HPKE evidence (JOSE)", statement, statement_oid)
+    return statement
 
 
 def build_evidence_bundle(
