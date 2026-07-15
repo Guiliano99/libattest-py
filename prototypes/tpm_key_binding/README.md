@@ -26,7 +26,7 @@ Two tokens, at the two points in the RATS pipeline where they belong:
    `KEY_BINDING` submodule carries the appraised **`cnf`** (RFC 7800 confirmation
    key) and **`key-attributes`** (draft §3), signed with the Verifier's ES256 key.
    The EAR is emitted in the repo's dotted wire dialect (`ear.status`,
-   `ear.attester-claims`, …), so `libattest.ear.ear_is_affirming` /
+   `ear.attester-claims`, …), so `libattest.formats.eat_ear.cwt_jwt.ear_is_affirming` /
    `parse_ear_verdict` read it directly.
 
 ```

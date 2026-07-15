@@ -40,6 +40,24 @@ EAT Attestation Result (draft-ietf-rats-ear-04) — the Verifier-signed result
 token, modelled by `EARToken`. The *output* of appraisal.
 _Avoid_: result token, verdict token
 
+**EAT Claims Set**:
+The typed Evidence claims-set a device produces (RFC 9711 §4 — `ueid`, `measurements`,
+`uptime`, `dbgstat`, …), modelled by `EATClaimsSet`. The Evidence-side counterpart to
+`EARToken`: Evidence in, appraisal, EAR out. Byte-valued claims share the same
+`Base64UrlBytes` / `EATNonce` types as the EAR model. Distinct from the raw *CWT Claim Set*
+(the untyped CBOR map) below.
+_Avoid_: EAT token, evidence blob
+
+**CWT Claim Set**:
+The CBOR map of CWT claims, keyed by integer claim labels. It is a claims
+representation, not by itself a signed or encrypted token.
+_Avoid_: CWT token, COSE message
+
+**JWT-style View**:
+A readable JSON object rendered from CWT/EAT claims. It is not a compact JWS
+and carries no signature by itself.
+_Avoid_: JWT, signed token
+
 **Attestation Key (AK)**:
 The Attester's signing key over Evidence. On a TPM it is a *restricted* signing
 key, so it can only sign TPM-generated data — not an arbitrary JWT/EAT.
@@ -64,6 +82,14 @@ When backed by a TPM, derived from the certified key's `TPMA_OBJECT` bits.
 _Avoid_: key properties, protection flags
 
 ### Wire formats
+
+**CMW**:
+The RATS Conceptual Message Wrapper (draft-ietf-rats-msg-wrap) is an
+encapsulation for one or more conceptual messages. A Record or Collection has
+equivalent JSON and CBOR serializations; its selected serialization determines
+how the contained message bytes are represented. Its DER encoding is an
+`AttestationStatement.stmt` value (a *statement payload*), not an entire
+`AttestationStatement`; the caller supplies the statement type OID and envelope.
 
 **Statement**:
 An OID-tagged ASN.1 `ANY` payload whose concrete pyasn1 type is selected

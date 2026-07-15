@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
-from libattest.formats.key_attest_pop import resolve_key_attest_evidence_oid
+from libattest import get_nonce_response_oid_for_name
 from libattest.formats.respinfo import DEFAULT_RESP_INFO_REGISTRY
 from libattest.formats.stmt_mappings import NONCE_RESPONSE_STATEMENT_STRUCTURES
 
 
 def test_default_registry_round_trips_key_attest_response() -> None:
     """GIVEN a key-attestation OID WHEN routed THEN its ``KeyAttestResp`` round-trips."""
-    oid = resolve_key_attest_evidence_oid()
+    oid = get_nonce_response_oid_for_name("key-attest")
     payload = {
         "encSeed": "0102",
         "encSecret": "a0b1c2",

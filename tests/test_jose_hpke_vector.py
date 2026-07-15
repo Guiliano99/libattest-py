@@ -4,7 +4,7 @@
 
 """HPKE-0 conformance test against draft-ietf-jose-hpke-encrypt-20 Appendix A.1.
 
-Exercises libattest.formats.jose_hpke (``open_integrated`` / ``seal_integrated``) so the
+Exercises libattest.formats.eat_ear.cwt_jwt_utils (``open_integrated`` / ``seal_integrated``) so the
 demo's HPKE-0 core is conformance-pinned to the spec, now on the ``cryptography`` backend.
 HPKE-0 = DHKEM(P-256, HKDF-SHA256) + HKDF-SHA256 + AES-128-GCM, Integrated Encryption.
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from libattest.formats import jose_hpke, jose_jws
+from libattest.formats.eat_ear import cwt_jwt_utils
 
 # draft-ietf-jose-hpke-encrypt-20, Appendix A.1 (HPKE-0) recipient key (incl. private d).
 RECIPIENT_JWK = {
@@ -55,7 +55,7 @@ PUBLISHED_COMPACT_JWE = (
 
 
 def test_open_published_vector() -> None:
-    header, plaintext = jose_hpke.open_integrated(PUBLISHED_COMPACT_JWE, RECIPIENT_JWK)
+    header, plaintext = cwt_jwt_utils.open_integrated(PUBLISHED_COMPACT_JWE, RECIPIENT_JWK)
     assert header["alg"] == "HPKE-0"
     assert plaintext, "recovered plaintext must be non-empty"
 
@@ -64,31 +64,31 @@ def test_roundtrip() -> None:
     pub = {k: v for k, v in RECIPIENT_JWK.items() if k != "d"}
     plaintext = b"eyJhbGciOiJFUzI1NiJ9.<inner-EAT-JWS>.<sig>"  # stand-in EAT-JWS
 
-    jwe = jose_hpke.seal_integrated(plaintext, {"kid": RECIPIENT_JWK["kid"]}, pub)
-    header, recovered = jose_hpke.open_integrated(jwe, RECIPIENT_JWK)
+    jwe = cwt_jwt_utils.seal_integrated(plaintext, {"kid": RECIPIENT_JWK["kid"]}, pub)
+    header, recovered = cwt_jwt_utils.open_integrated(jwe, RECIPIENT_JWK)
     assert header["alg"] == "HPKE-0"
     assert recovered == plaintext
 
 
 def test_tampered_ciphertext_rejected() -> None:
     pub = {k: v for k, v in RECIPIENT_JWK.items() if k != "d"}
-    jwe = jose_hpke.seal_integrated(b"secret", {}, pub)
+    jwe = cwt_jwt_utils.seal_integrated(b"secret", {}, pub)
     parts = jwe.split(".")
     parts[3] = ("B" if parts[3][0] != "B" else "C") + parts[3][1:]
     with pytest.raises(InvalidTag):
-        jose_hpke.open_integrated(".".join(parts), RECIPIENT_JWK)
+        cwt_jwt_utils.open_integrated(".".join(parts), RECIPIENT_JWK)
 
 
 def test_non_empty_iv_or_tag_rejected() -> None:
     pub = {k: v for k, v in RECIPIENT_JWK.items() if k != "d"}
-    p, enc, _iv, ct, _tag = jose_hpke.seal_integrated(b"x", {}, pub).split(".")
+    p, enc, _iv, ct, _tag = cwt_jwt_utils.seal_integrated(b"x", {}, pub).split(".")
     with pytest.raises(ValueError, match="empty IV and Tag"):
-        jose_hpke.open_integrated(".".join([p, enc, jose_jws.b64u_encode(b"iv"), ct, ""]), RECIPIENT_JWK)
+        cwt_jwt_utils.open_integrated(".".join([p, enc, cwt_jwt_utils.b64u_encode(b"iv"), ct, ""]), RECIPIENT_JWK)
 
 
 def test_aad_helpers_present() -> None:
     # Guard: the JOSE-HPKE-0 aad binding depends on cryptography's private single-shot
     # helpers; if a release relocates them, importing jose_hpke raises, so reaching here
     # means they bound successfully.
-    assert callable(jose_hpke._encrypt_with_aad)
-    assert callable(jose_hpke._decrypt_with_aad)
+    assert callable(cwt_jwt_utils._encrypt_with_aad)
+    assert callable(cwt_jwt_utils._decrypt_with_aad)

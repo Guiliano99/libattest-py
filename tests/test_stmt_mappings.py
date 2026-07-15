@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import pytest
 from pyasn1.type import univ
 from pyasn1_alt_modules import rfc5280
 
+from libattest.formats.cmw import CMW
+from libattest.formats.eareat_hpke import resolve_cose_evidence_enc_oid
 from libattest.formats.eareat_hpke import EVIDENCE_ENC_PARAMS_OID, resolve_evidence_enc_oid
 from libattest.formats.key_attest_pop import (
     KeyAttestChall,
@@ -19,9 +22,13 @@ from libattest.formats.stmt_mappings import (
     ATTESTATION_STATEMENT_STRUCTURES,
     NONCE_REQUEST_STATEMENT_STRUCTURES,
     NONCE_RESPONSE_STATEMENT_STRUCTURES,
+    get_nonce_request_oid_for_name,
     get_nonce_request_statement_decoder,
     get_nonce_request_statement_structure,
+    get_nonce_response_oid_for_name,
     get_nonce_response_statement_structure,
+    get_oid_by_name,
+    get_oid_for_stmt_name,
 )
 from libattest.formats.tpm import (
     TPM20QuoteReqInfoASN1,
@@ -30,8 +37,7 @@ from libattest.formats.tpm import (
     id_tpm20_quote_res,
 )
 from libattest.formats.tpm.pcr_selection import resolve_tpm_pcr_selection_oid
-from libattest.formats.tpm.tcg import id_tcg_attest_quote
-from libattest.x509 import CMW, ID_PE_CMW
+from libattest.formats.tpm.tcg import id_tcg_attest_certify, id_tcg_attest_quote
 
 
 def test_resolved_pcr_selection_oid_maps_to_tpm_quote_payload_types() -> None:
@@ -70,11 +76,13 @@ def test_key_attestation_and_encrypted_evidence_oids_map_to_their_asn1_structure
     """GIVEN supported statement OIDs THEN their typed payloads are selected."""
     key_attest_oid = resolve_key_attest_evidence_oid()
     evidence_enc_oid = resolve_evidence_enc_oid()
+    cose_evidence_enc_oid = resolve_cose_evidence_enc_oid()
 
     assert NONCE_RESPONSE_STATEMENT_STRUCTURES[key_attest_oid] is KeyAttestResp
     assert ATTESTATION_STATEMENT_STRUCTURES[key_attest_oid] is KeyAttestEvidence
     assert ATTESTATION_STATEMENT_STRUCTURES[evidence_enc_oid] is univ.OctetString
-    assert ATTESTATION_STATEMENT_STRUCTURES[str(ID_PE_CMW)] is CMW
+    assert ATTESTATION_STATEMENT_STRUCTURES[cose_evidence_enc_oid] is CMW
+    assert ATTESTATION_STATEMENT_STRUCTURES[get_oid_for_stmt_name("cmw")] is CMW
 
 
 def test_key_attest_chall_and_evidence_enc_params_oids_map_to_their_asn1_structures() -> None:
@@ -85,3 +93,33 @@ def test_key_attest_chall_and_evidence_enc_params_oids_map_to_their_asn1_structu
     assert get_nonce_request_statement_structure(key_attest_oid) is KeyAttestChall
     assert NONCE_RESPONSE_STATEMENT_STRUCTURES[EVIDENCE_ENC_PARAMS_OID] is rfc5280.SubjectPublicKeyInfo
     assert get_nonce_response_statement_structure(EVIDENCE_ENC_PARAMS_OID) is rfc5280.SubjectPublicKeyInfo
+
+
+def test_oid_accessors_agree_with_the_underlying_resolvers() -> None:
+    """GIVEN the name->OID accessors WHEN called THEN they match the raw resolver/OID values."""
+    assert get_oid_for_stmt_name("cmw") == get_oid_by_name("id_cmw") == get_oid_by_name("cmw")
+    assert get_oid_for_stmt_name("key-attest") == resolve_key_attest_evidence_oid()
+    assert get_oid_for_stmt_name("jose-hpke-evidence") == resolve_evidence_enc_oid()
+    assert get_oid_for_stmt_name("cose-hpke-evidence") == resolve_cose_evidence_enc_oid()
+
+    assert get_nonce_request_oid_for_name("tpm-quote") == resolve_tpm_pcr_selection_oid()
+    assert get_nonce_request_oid_for_name("key-attest") == resolve_key_attest_evidence_oid()
+    assert get_nonce_request_oid_for_name("jose-hpke-evidence-params") == EVIDENCE_ENC_PARAMS_OID
+
+    assert get_nonce_response_oid_for_name("tpm-quote-result") == str(id_tpm20_quote_res)
+    assert get_nonce_response_oid_for_name("tcg-attest-quote") == str(id_tcg_attest_quote)
+
+    assert get_oid_by_name("tcg-attest-certify") == str(id_tcg_attest_certify)
+
+    for accessor in (get_oid_for_stmt_name, get_nonce_request_oid_for_name, get_nonce_response_oid_for_name):
+        with pytest.raises(ValueError, match="unknown"):
+            accessor("not-a-real-name")
+    with pytest.raises(ValueError, match="unknown"):
+        get_oid_by_name("not-a-real-name")
+
+
+def test_id_cmw_is_an_alias_for_the_cmw_statement_name() -> None:
+    """GIVEN the id_cmw name WHEN looked up THEN it resolves to the same OID as 'cmw'."""
+    assert get_oid_for_stmt_name("id_cmw") == get_oid_for_stmt_name("cmw")
+    assert get_oid_by_name("id_cmw") == get_oid_by_name("cmw")
+    assert ATTESTATION_STATEMENT_STRUCTURES[get_oid_for_stmt_name("id_cmw")] is CMW

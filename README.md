@@ -15,7 +15,13 @@ The package provides:
 - `VerifierRouter` — in-memory verifier routing by hint, evidence type, or nonce.
 - `VeraisonServiceBase` — FastAPI-based abstract base for Veraison-compatible services.
 - `libattest.testing.fakes` — in-memory verifier and echo provider for unit tests.
-- `libattest.ear` — EAR JWT verdict parsing helpers.
+- `libattest.formats.eat_ear.cwt_jwt` — EAR JWT verdict parsing helpers.
+
+> **OID access.** Reference every project OID *only* through the accessors re-exported from
+> `libattest`: `get_oid_by_name(name)` (any known OID) plus the position-scoped
+> `get_oid_for_stmt_name` / `get_nonce_request_oid_for_name` / `get_nonce_response_oid_for_name`.
+> Do not import raw OID constants (e.g. `ID_PE_CMW`) or the `resolve_*_oid` helpers directly —
+> these functions are the single supported source, keeping OID names and values centralized.
 
 ---
 

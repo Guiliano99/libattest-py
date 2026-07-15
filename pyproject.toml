@@ -12,14 +12,14 @@ version = "0.1.0"
 description = "Python remote attestation helpers for the MockCA integration."
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 dependencies = [
     "pyasn1>=0.6.3",
     "pyasn1-alt-modules>=0.4.10",
     "requests>=2.28.0",
     "cryptography>=49.0.0, <50.0.0",
     "PyJWT>=2.13.0",  # ES256 compact JWS sign/verify (jose_jws); ECDSA via the cryptography dep above
-    "pydantic>=2.9",  # EAR (EAT Attestation Result) token model (libattest.ear)
+    "pydantic>=2.9",  # EAR (EAT Attestation Result) token model (libattest.formats.eat_ear.cwt_jwt)
     "keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git",  # key generation helper (generate_key)
     "tpm2-pytss>=2.3.0",  # mandatory: ESAPI access + TPMS_ATTEST parsing
     "pyhpke @ git+https://github.com/dajiaji/pyhpke.git@7b80aefc90b258ffe763e5b164205c8c689b7f24",
@@ -62,3 +62,9 @@ py-modules = ["attest_client", "verifier_service"]
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["libattest*"]
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]
+
+[tool.pylint.format]
+max-line-length = 120

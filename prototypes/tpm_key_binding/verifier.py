@@ -34,8 +34,8 @@ from evidence import KeyBindingEvidence
 from key_attributes import KeyBindingPolicy, derive_key_attributes
 from tpm2_pytss import TPM2B_PUBLIC, TPMT_PUBLIC
 
-from libattest.ear import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
-from libattest.formats.jose_jws import p256_public_to_jwk, sign_es256
+from libattest.formats.eat_ear.cwt_jwt import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
+from libattest.formats.eat_ear.cwt_jwt_utils import p256_public_to_jwk, sign_es256
 from libattest.formats.tpm.tpm_name import compute_tpm_name
 from libattest.formats.tpm.tpm_signature import verify_tpm_signature
 from libattest.formats.tpm.tpms_attest import (
@@ -212,7 +212,7 @@ class KeyBindingVerifier:
 
         The ``EARToken`` is a validated, self-documenting intermediate; the wire
         claims use the repo's dotted EAR dialect (``ear.status`` etc.) so that
-        ``libattest.ear.parse_ear_verdict`` / ``ear_is_affirming`` and the
+        ``libattest.formats.eat_ear.cwt_jwt.parse_ear_verdict`` / ``ear_is_affirming`` and the
         ``VeraisonVerifierClient`` can read the verdict.
         """
         appraisal = EARAppraisal(

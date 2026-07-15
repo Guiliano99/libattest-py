@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from key_attributes import KeyBindingPolicy, derive_key_attributes  # noqa: E402
 from verifier import KeyBindingVerifier, subject_public_key_from_tpmt_public  # noqa: E402
 
-from libattest.ear import ear_is_affirming, verify_ear_jwt  # noqa: E402
+from libattest.formats.eat_ear.cwt_jwt import ear_is_affirming, verify_ear_jwt  # noqa: E402
 
 _NONCE = b"verifier-issued-nonce-0123456789"  # 32 bytes, >= EATNonce min (8)
 _POLICY = KeyBindingPolicy()  # strict defaults: never-extractable, !extractable, local

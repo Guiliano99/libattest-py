@@ -14,7 +14,7 @@ from __future__ import annotations
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
-from libattest.formats import jose_jws
+from libattest.formats.eat_ear import cwt_jwt_utils
 from libattest.verifier.eat_appraisal import appraise_eat_jwt, check_nonce_and_claim, eat_nonce_bytes
 
 KID = "AYZTfot8SkI5u4aVAWvjXAGCNDIYF7yzwBipMLLzo8MM"
@@ -22,9 +22,9 @@ NONCE = b"\x02" * 16
 
 
 def _ec_token(kid: str, nonce: bytes, mock_claim: str, key: ec.EllipticCurvePrivateKey) -> bytes:
-    # jose_jws.sign_es256 doesn't stamp a kid, so build the header via PyJWT directly
+    # cwt_jwt_utils.sign_es256 doesn't stamp a kid, so build the header via PyJWT directly
     # (the same library jose_jws itself wraps) to match what the demo verifiers receive.
-    payload = {"eat_nonce": jose_jws.b64u_encode(nonce), "mock_claim": mock_claim, "iat": 0}
+    payload = {"eat_nonce": cwt_jwt_utils.b64u_encode(nonce), "mock_claim": mock_claim, "iat": 0}
     return jwt.encode(payload, key, algorithm="ES256", headers={"kid": kid}).encode()
 
 
@@ -84,7 +84,7 @@ def test_appraise_eat_jwt_wrong_mock_claim_contraindicated():
 
 def test_appraise_eat_jwt_rsa_ps256_supported():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    payload = {"eat_nonce": jose_jws.b64u_encode(NONCE), "mock_claim": "secure", "iat": 0}
+    payload = {"eat_nonce": cwt_jwt_utils.b64u_encode(NONCE), "mock_claim": "secure", "iat": 0}
     token = jwt.encode(payload, key, algorithm="PS256", headers={"kid": KID}).encode()
     trust_anchors = {KID: key.public_key()}
 
@@ -94,7 +94,7 @@ def test_appraise_eat_jwt_rsa_ps256_supported():
 
 
 def test_eat_nonce_bytes_tolerates_padding():
-    unpadded = jose_jws.b64u_encode(NONCE)
+    unpadded = cwt_jwt_utils.b64u_encode(NONCE)
     padded = unpadded + "=" * (-len(unpadded) % 4)
 
     assert eat_nonce_bytes(unpadded) == NONCE
@@ -103,7 +103,7 @@ def test_eat_nonce_bytes_tolerates_padding():
 
 
 def test_check_nonce_and_claim_affirming():
-    claims = {"eat_nonce": jose_jws.b64u_encode(NONCE), "mock_claim": "secure"}
+    claims = {"eat_nonce": cwt_jwt_utils.b64u_encode(NONCE), "mock_claim": "secure"}
 
     status, reason = check_nonce_and_claim(claims, NONCE, "secure")
 

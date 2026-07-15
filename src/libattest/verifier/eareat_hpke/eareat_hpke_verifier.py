@@ -14,8 +14,8 @@ Appraisal gates (G0-G5): decode CMW -> HPKE-open -> verify inner EAT-JWS -> fres
 (inner ``eat_nonce`` AND protected-header ``eat_nonce`` == RA nonce) -> appraise
 ``mock_claim``.  Real decryption + verification; no stub path.
 
-HPKE-0 via :mod:`libattest.formats.jose_hpke` and ES256 JWS via
-:mod:`libattest.formats.jose_jws` — both on ``cryptography`` alone (no ``pyhpke`` /
+HPKE-0 via :mod:`libattest.formats.eat_ear.cwt_jwt_utils` and ES256 JWS via
+:mod:`libattest.formats.eat_ear.cwt_jwt_utils` — both on ``cryptography`` alone (no ``pyhpke`` /
 ``python-jose``).  An affirming verdict carries the signed EAR JWT as its
 :attr:`~libattest.types.VerifyResult.payload`, which the RA engine harvests directly.
 """
@@ -30,9 +30,9 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from libattest.ear import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
 from libattest.formats import eareat_hpke as evidence
-from libattest.formats import jose_hpke, jose_jws
+from libattest.formats.eat_ear import cwt_jwt_utils
+from libattest.formats.eat_ear.cwt_jwt import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
 from libattest.media_types import EAT_JWT, base_media_type
 from libattest.types import VerifyResult
 from libattest.verifier.base import AttestationVerifier
@@ -59,7 +59,7 @@ def _ear_token_to_veraison_claims(token: EARToken) -> dict[str, Any]:
     """Re-key a draft-04 EARToken into this verifier's Veraison EAR claims-set (dotted keys).
 
     The EARToken is used only as a validated, self-documenting intermediate; the wire format
-    stays the Veraison one (``ear.status`` etc.) that ``libattest.ear.parse_ear_verdict`` and the
+    stays the Veraison one (``ear.status`` etc.) that ``libattest.formats.eat_ear.cwt_jwt.parse_ear_verdict`` and the
     ``VeraisonVerifierClient`` consume.
     """
     submods: dict[str, Any] = {}
@@ -121,8 +121,8 @@ class EarEatHpkeVerifier(AttestationVerifier):
     # ── published keys ───────────────────────────────────────────────────────────
     def evidence_encryption_jwk(self, *, kid: str = "eareat-hpke-verifier") -> dict:
         """Return this verifier's HPKE recipient public key as a JWK for the attester."""
-        jwk = jose_jws.p256_public_to_jwk(self._hpke_recipient_key.public_key())
-        jwk.update({"alg": jose_hpke.ALG, "use": "enc", "kid": kid})
+        jwk = cwt_jwt_utils.p256_public_to_jwk(self._hpke_recipient_key.public_key())
+        jwk.update({"alg": cwt_jwt_utils.HPKE0_ALG, "use": "enc", "kid": kid})
         return jwk
 
     def ear_verification_pem(self) -> str:
@@ -178,10 +178,10 @@ class EarEatHpkeVerifier(AttestationVerifier):
 
     # ── gates G0-G5 ──────────────────────────────────────────────────────────────
     def _appraise(self, stmt_der: bytes, expected_nonce: bytes) -> VerifyResult:
-        expected_b64u = jose_jws.b64u_encode(expected_nonce)
+        expected_b64u = cwt_jwt_utils.b64u_encode(expected_nonce)
         try:
             jwe = evidence.extract_jwe_from_statement(stmt_der)  # G0
-            header, inner = jose_hpke.open_integrated(jwe, self._hpke_recipient_key)  # G1/G2
+            header, inner = cwt_jwt_utils.open_integrated(jwe, self._hpke_recipient_key)  # G1/G2
         except (ValueError, InvalidTag) as exc:
             logger.warning("evidence decode/decrypt failed: %s", exc)
             return VerifyResult.contraindicated(f"evidence decode/decrypt failed: {exc}")
@@ -190,8 +190,8 @@ class EarEatHpkeVerifier(AttestationVerifier):
             return VerifyResult.contraindicated("protected-header eat_nonce mismatch")
 
         try:  # G3
-            claims = jose_jws.verify_es256(inner.decode("ascii"), self._attestation_public_key)
-        except (ValueError, jose_jws.InvalidSignature) as exc:
+            claims = cwt_jwt_utils.verify_es256(inner.decode("ascii"), self._attestation_public_key)
+        except (ValueError, cwt_jwt_utils.InvalidSignature) as exc:
             logger.warning("inner EAT-JWS verification failed: %s", exc)
             return VerifyResult.contraindicated(f"inner EAT-JWS verification failed: {exc}")
 
@@ -212,7 +212,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
         this is for callers that must also emit an EAR for a rejected verdict (e.g. a
         service that returns an EAR regardless of outcome).
         """
-        return self._build_ear_jwt(jose_jws.b64u_encode(nonce), status)
+        return self._build_ear_jwt(cwt_jwt_utils.b64u_encode(nonce), status)
 
     def _build_ear_jwt(self, nonce_b64url: str, status: str) -> str:
         trust_vector = (
@@ -224,7 +224,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
             eat_profile=_EAT_PROFILE,  # override the draft-04 default with the Veraison profile
             iat=int(time.time()),
             ear_verifier_id={"build": "N/A", "developer": "eareat-hpke-verifier"},
-            eat_nonce=EATNonce(jose_jws.b64u_decode(nonce_b64url)),
+            eat_nonce=EATNonce(cwt_jwt_utils.b64u_decode(nonce_b64url)),
             submods={
                 self._scheme_name: EARAppraisal(
                     ear_status=TrustworthinessTier(status),
@@ -233,7 +233,7 @@ class EarEatHpkeVerifier(AttestationVerifier):
                 )
             },
         )
-        return jose_jws.sign_es256(_ear_token_to_veraison_claims(token), self._ear_signing_key)
+        return cwt_jwt_utils.sign_es256(_ear_token_to_veraison_claims(token), self._ear_signing_key)
 
 
 __all__ = ["EarEatHpkeVerifier"]

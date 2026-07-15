@@ -16,7 +16,7 @@ place that logic lives, so demo verifiers stop reimplementing it by hand.
 PS256) because the EarEatDemo negative-scenario evidence-config exercises a
 wrong-key-type case (``example-incorrect-key-ps256``). The HPKE demo's inner
 EAT-JWS step uses a single fixed EC key instead of a kid-keyed trust store, so
-it keeps using :func:`libattest.formats.jose_jws.verify_es256` for signature
+it keeps using :func:`libattest.formats.eat_ear.cwt_jwt_utils.verify_es256` for signature
 verification and only reuses :func:`eat_nonce_bytes` / :func:`check_nonce_and_claim`
 from here for the freshness + claim tail.
 """

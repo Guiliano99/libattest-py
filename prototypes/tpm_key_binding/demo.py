@@ -26,7 +26,7 @@ from attester import STRONG_SUBJECT_ATTRS, WEAK_SUBJECT_ATTRS, SyntheticKeyBindi
 from key_attributes import KeyBindingPolicy  # noqa: E402
 from verifier import KeyBindingVerifier  # noqa: E402
 
-from libattest.ear import ear_is_affirming, verify_ear_jwt  # noqa: E402
+from libattest.formats.eat_ear.cwt_jwt import ear_is_affirming, verify_ear_jwt  # noqa: E402
 
 # A real deployment fetches this from the Verifier; here it is a fixed 32 bytes.
 NONCE = os.urandom(32)

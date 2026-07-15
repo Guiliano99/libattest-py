@@ -37,10 +37,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cwt.exceptions import CWTError
 
-from libattest.formats.cose_hpke import open_cose_hpke_evidence
-from libattest.ear import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
-from libattest.formats import eareat_cose_hpke as evidence
-from libattest.formats import jose_hpke, jose_jws
+from libattest.formats import eareat_hpke as evidence
+from libattest.formats.eat_ear import cwt_jwt_utils
+from libattest.formats.eat_ear.cwt_jwt import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
+from libattest.formats.eat_ear.cwt_jwt_utils import open_cose_hpke_evidence
 from libattest.media_types import EAT_CWT, base_media_type
 from libattest.types import VerifyResult
 from libattest.verifier.base import AttestationVerifier
@@ -154,8 +154,8 @@ class CoseEatHpkeVerifier(AttestationVerifier):
         use HPKE-0's DHKEM-P256 KEM), so the attester fetches it the same way; only the
         envelope it later produces (COSE_Encrypt0 vs JWE) differs.
         """
-        jwk = jose_jws.p256_public_to_jwk(self._hpke_recipient_key.public_key())
-        jwk.update({"alg": jose_hpke.ALG, "use": "enc", "kid": kid})
+        jwk = cwt_jwt_utils.p256_public_to_jwk(self._hpke_recipient_key.public_key())
+        jwk.update({"alg": cwt_jwt_utils.HPKE0_ALG, "use": "enc", "kid": kid})
         return jwk
 
     def ear_verification_pem(self) -> str:
@@ -201,9 +201,7 @@ class CoseEatHpkeVerifier(AttestationVerifier):
         try:
             cose = evidence.extract_cose_from_statement(stmt_der)  # G0
             # G1/G2 COSE-HPKE-open + G3 nested COSE_Sign1 verify, in one call.
-            claims = open_cose_hpke_evidence(
-                cose, self._hpke_recipient_key, verify_key=self._attestation_public_key
-            )
+            claims = open_cose_hpke_evidence(cose, self._hpke_recipient_key, verify_key=self._attestation_public_key)
         except (ValueError, InvalidTag, CWTError) as exc:
             logger.warning("evidence decode/decrypt/verify failed: %s", exc)
             return VerifyResult.contraindicated(f"evidence decode/decrypt/verify failed: {exc}")
@@ -217,12 +215,12 @@ class CoseEatHpkeVerifier(AttestationVerifier):
             return VerifyResult.contraindicated(reason)
 
         logger.info("appraisal passed: mock_claim matches reference")
-        return VerifyResult.affirming(self._build_ear_jwt(jose_jws.b64u_encode(expected_nonce), "affirming"))
+        return VerifyResult.affirming(self._build_ear_jwt(cwt_jwt_utils.b64u_encode(expected_nonce), "affirming"))
 
     # ── EAR issuance ─────────────────────────────────────────────────────────────
     def issue_ear(self, nonce: bytes, status: str = "contraindicated") -> str:
         """Sign an EAR JWT for *status* over *nonce* (for callers that emit an EAR on rejection too)."""
-        return self._build_ear_jwt(jose_jws.b64u_encode(nonce), status)
+        return self._build_ear_jwt(cwt_jwt_utils.b64u_encode(nonce), status)
 
     def _build_ear_jwt(self, nonce_b64url: str, status: str) -> str:
         trust_vector = (
@@ -232,7 +230,7 @@ class CoseEatHpkeVerifier(AttestationVerifier):
             eat_profile=_EAT_PROFILE,
             iat=int(time.time()),
             ear_verifier_id={"build": "N/A", "developer": self._verifier_developer},
-            eat_nonce=EATNonce(jose_jws.b64u_decode(nonce_b64url)),
+            eat_nonce=EATNonce(cwt_jwt_utils.b64u_decode(nonce_b64url)),
             submods={
                 self._scheme_name: EARAppraisal(
                     ear_status=TrustworthinessTier(status),
@@ -241,7 +239,7 @@ class CoseEatHpkeVerifier(AttestationVerifier):
                 )
             },
         )
-        return jose_jws.sign_es256(_ear_token_to_veraison_claims(token), self._ear_signing_key)
+        return cwt_jwt_utils.sign_es256(_ear_token_to_veraison_claims(token), self._ear_signing_key)
 
 
 __all__ = ["CoseEatHpkeVerifier"]

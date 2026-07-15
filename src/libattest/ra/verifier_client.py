@@ -12,8 +12,8 @@ It is the ``/submitEvidenceCMP`` → EAR client moved out of the MockCA
   and reads back ``{"ear": "<EAR JWT>"}``,
 * fetches and caches the verifier's EAR signing key from
   ``/ear-verification-key`` and verifies every EAR JWT signature
-  (:func:`libattest.ear.verify_ear_jwt`), and
-* checks the EAR verdict is affirming (:func:`libattest.ear.ear_is_affirming`).
+  (:func:`libattest.formats.eat_ear.cwt_jwt.verify_ear_jwt`), and
+* checks the EAR verdict is affirming (:func:`libattest.formats.eat_ear.cwt_jwt.ear_is_affirming`).
 
 It implements the :class:`~libattest.verifier.base.AttestationVerifier` ABC
 (``get_nonce`` / ``verify_token``) so the engine and the
@@ -37,7 +37,7 @@ import requests
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from libattest.ear import ear_is_affirming, verify_ear_jwt
+from libattest.formats.eat_ear.cwt_jwt import ear_is_affirming, verify_ear_jwt
 from libattest.types import VerifyResult
 from libattest.verifier.base import AttestationVerifier
 

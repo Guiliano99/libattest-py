@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the EAR token pydantic model (libattest.ear).
+"""Tests for the EAR token pydantic model (libattest.formats.eat_ear.cwt_jwt).
 
 Covers the draft-ietf-rats-ear-04 claims-set: profile default, alias <-> python-name
 round-trip, extension preservation, the EARAppraisal subclass, and the two worked JSON
@@ -11,7 +11,7 @@ examples from the draft (Figure 3 contraindicated, Figure 4 composite affirming)
 
 from __future__ import annotations
 
-from libattest.ear import EAR_PROFILE, EARAppraisal, EARToken, TrustworthinessTier
+from libattest.formats.eat_ear.cwt_jwt import EAR_PROFILE, EARAppraisal, EARToken, TrustworthinessTier
 
 
 def _minimal_payload() -> dict:

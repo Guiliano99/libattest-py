@@ -17,6 +17,7 @@ from pyasn1.codec.der import decoder as der_decoder
 from pyasn1.codec.der import encoder as der_encoder
 from pyasn1.type import univ
 
+from libattest import get_oid_by_name
 from libattest.formats.csrattest import (
     AttestationStatement,
     decode_attestation_bundle,
@@ -30,7 +31,6 @@ from libattest.formats.csrattest import (
 )
 from libattest.x509 import (
     CMW,
-    ID_PE_CMW_DOTTED,
     encode_ear_extension,
     unwrap_context_tag,
     wrap_ear_in_cmw_json,
@@ -125,8 +125,8 @@ def test_encode_ear_extension_raw_oid():
 
 
 def test_encode_ear_extension_cmw_oid_wraps_record():
-    oid, value = encode_ear_extension("a.b.c", oid=ID_PE_CMW_DOTTED)
-    assert oid == ID_PE_CMW_DOTTED
+    oid, value = encode_ear_extension("a.b.c", oid=get_oid_by_name("cmw"))
+    assert oid == get_oid_by_name("cmw")
     cmw, _ = der_decoder.decode(value, asn1Spec=CMW())
     assert cmw.getName() == "json"
     # CMW JSON record: [media-type, base64url-nopad(jwt)].

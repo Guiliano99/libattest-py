@@ -26,8 +26,8 @@ select = [
 "main.py" = ["T"]
 # TPM demo entrypoints are readable CLI narratives; print is intentional.
 "docker/tpm-demo/*.py" = ["T"]
-# cwt_utils.py's main() is a runnable CWT demo; its prints are intentional narrative.
-"src/libattest/formats/cwt_utils.py" = ["T"]
+# cwt_jwt_utils.py's main() is a runnable CWT demo; its prints are intentional narrative.
+"src/libattest/formats/eat_ear/cwt_jwt_utils.py" = ["T"]
 
 [lint.isort]
 known-first-party = ["src"]

@@ -3,7 +3,8 @@ SPDX-License-Identifier: Apache-2.0 -->
 
 # References
 
-References for the top-level format modules (`jose_hpke.py`, `jose_jws.py`,
+References for the format modules (`eat_ear/cwt_jwt_utils.py` — the merged
+JOSE/COSE sign+seal layer, formerly `jose_hpke.py`/`jose_jws.py` — and
 `eareat_hpke.py`). See the subfolders for their own `REFERENCES.md`:
 `csrattest/`, `key_attest_pop/`, `tpm/`.
 

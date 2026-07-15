@@ -10,14 +10,23 @@ any TPM or ASN.1 structure: :func:`generate_tpm_evidence` drives the TPM
 (``tpm2_pytss`` via :class:`~libattest.attester.tpm_client.TpmClient`), builds
 the ``TcgAttestCertify``/``KeyAttestEvidence`` DER, and hands
 back ``(evidence_der, type_oid)``. (TPM2_Quote and TPM2_Certify evidence share
-the ``TcgAttestCertify`` wire shape; the outer OID distinguishes them.) The caller wraps that pair in an
-``AttestationStatement``/``AttestationBundle`` — this module never sees that
+the ``TcgAttestCertify`` wire shape; the outer OID distinguishes them.) The
+caller wraps that pair in an ``AttestationStatement``/``AttestationBundle``;
+this module never sees that
 envelope, mirroring how ``atg_generate_evidence`` hands the software EAR/EAT
 path an opaque token plus its type OID.
 
 :func:`build_key_attest_chall` is the matching nonce-time one-shot: it reads the
 AK Name + EK public from the TPM and returns the ``KeyAttestChall`` DER the
 client sends in the CMP ``NonceRequest.reqInfo``.
+
+For the JOSE/COSE software-evidence examples,
+:func:`generate_cwt_evidence` returns ``DER(CMW)`` for the caller to place
+directly into ``AttestationStatement.stmt``.  The caller owns the evidence type
+OID and CSR-attestation envelope.  The legacy low-level COSE-HPKE aliases remain
+available for Python callers; new code should import ``generate_cwt_evidence`` from
+``libattest.formats.eareat_hpke`` and the COSE-HPKE seal/open primitives from
+``libattest.formats.eat_ear.cwt_jwt_utils`` directly.
 
 All parameters are positional-friendly (no keyword-only arguments) so the
 CPython C-API glue can call this with a plain argument tuple.
@@ -28,10 +37,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from pyasn1.codec.der import encoder as der_encoder
-
 from libattest.attester.tpm_client import TpmClient
-from libattest.formats.cose_hpke import (
+from libattest.formats.eareat_hpke import generate_cwt_evidence
+from libattest.formats.eat_ear.cwt_jwt_utils import (
     COSE_HPKE_STMT_TYPE_OID,
     open_cose_hpke_evidence,
     seal_cose_hpke_evidence,
@@ -62,6 +70,8 @@ def _corrupt_sig(signature_wire_bytes: bytes) -> bytes:
     return signature_wire_bytes
 
 
+# This public C-API bridge deliberately keeps its stable positional argument surface.
+# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
 def generate_tpm_evidence(
     kind: str,
     nonce: bytes | str,
@@ -143,6 +153,8 @@ def generate_tpm_evidence(
             third_field = result.pcr_values or None
             type_oid = id_tcg_attest_quote
         else:
+            if subject_key_pem is None:
+                raise ValueError("kind='certify' requires subject_key_pem")
             result = tpm.certify(subject_key_pem, nonce)
             third_field = result.tpmt_public
             type_oid = id_tcg_attest_certify
@@ -157,9 +169,12 @@ def generate_tpm_evidence(
         tpm_tpublic=third_field,
     )
     log_statement("TcgAttestCertify", statement, str(type_oid))
-    return der_encoder.encode(statement), str(type_oid)
+    return encode_to_der(statement), str(type_oid)
 
 
+# pylint: enable=too-many-arguments,too-many-positional-arguments,too-many-locals
+# The internal helper receives the complete credential-activation tuple from the bridge.
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 def _generate_key_attest_evidence(
     nonce: bytes | str,
     tcti: str,
@@ -197,6 +212,7 @@ def _generate_key_attest_evidence(
     return encode_to_der(evidence), evidence_oid
 
 
+# pylint: enable=too-many-arguments,too-many-positional-arguments
 def build_key_attest_chall(tcti: str, ak_handle: int, ek_cert_chain: str) -> bytes:
     """Return the ``KeyAttestChall`` DER for the CMP ``NonceRequest.reqInfo``.
 
@@ -208,10 +224,12 @@ def build_key_attest_chall(tcti: str, ak_handle: int, ek_cert_chain: str) -> byt
     ``-ekCertChain`` flag passes a path.
     """
     # ponytail: accept a PEM path or inline PEM so the C bridge can pass a path.
-    pem = ek_cert_chain if "-----BEGIN" in ek_cert_chain else Path(ek_cert_chain).read_text()
+    pem = ek_cert_chain if "-----BEGIN" in ek_cert_chain else Path(ek_cert_chain).read_text(encoding="utf-8")
     with TpmClient(tcti=tcti) as tpm:
         tpm.load_ak(ak_handle)
         tpm.provision_ek()
+        if tpm.ak_name is None or tpm.ek_public is None:
+            raise RuntimeError("TPM did not provide a loaded AK name and EK public area")
         ak_name = bytes(tpm.ak_name)
         ek_public = bytes(tpm.ek_public.marshal())
 
@@ -220,6 +238,8 @@ def build_key_attest_chall(tcti: str, ak_handle: int, ek_cert_chain: str) -> byt
     return encode_to_der(chall)
 
 
+# This public C-API bridge deliberately keeps its stable positional argument surface.
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 def generate_key_attest_evidence(
     nonce: bytes | str,
     tcti: str,
@@ -248,9 +268,11 @@ def generate_key_attest_evidence(
     )
 
 
+# pylint: enable=too-many-arguments,too-many-positional-arguments
 __all__ = [
     "COSE_HPKE_STMT_TYPE_OID",
     "build_key_attest_chall",
+    "generate_cwt_evidence",
     "generate_key_attest_evidence",
     "generate_tpm_evidence",
     "open_cose_hpke_evidence",

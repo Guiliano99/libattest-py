@@ -56,54 +56,14 @@ wording in the draft.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import warnings
 from typing import Optional, Union
 
-from pyasn1.type import char, namedtype, univ
-
-from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
+from libattest.asn1_utils import try_decode_pyasn1
+from libattest.formats.cmw import CMW, ID_PE_CMW, encode_cmw_json_record
 
 logger = logging.getLogger(__name__)
-
-# ── OID constants ────────────────────────────────────────────────────────────
-
-#: ``id-pe-cmw`` as a pyasn1 :class:`~pyasn1.type.univ.ObjectIdentifier`.
-ID_PE_CMW: univ.ObjectIdentifier = univ.ObjectIdentifier("1.3.6.1.5.5.7.1.35")
-
-#: ``id-pe-cmw`` as a Python string in dot-decimal form.  Useful when
-#: matching against ``cryptography.x509.Extension.oid.dotted_string`` or
-#: ``str(asn1_obj)`` output from pyasn1.
-ID_PE_CMW_DOTTED: str = "1.3.6.1.5.5.7.1.35"
-
-
-# ── ASN.1 schema ─────────────────────────────────────────────────────────────
-
-
-class CMW(univ.Choice):
-    """``CMW ::= CHOICE { json UTF8String, cbor OCTET STRING }``.
-
-    Use :func:`~libattest.asn1_utils.try_decode_pyasn1` to decode a CMW
-    extension value::
-
-        cmw = try_decode_pyasn1(extn_value_bytes, CMW)
-        if cmw.getName() == "json":
-            payload = str(cmw["json"]).encode("utf-8")
-        else:
-            payload = bytes(cmw["cbor"])
-
-    Construction for encoding follows the same pattern::
-
-        cmw = CMW()
-        cmw.setComponentByName("cbor", univ.OctetString(my_cbor_bytes))
-        der = encode_to_der(cmw)
-    """
-
-    componentType = namedtype.NamedTypes(
-        namedtype.NamedType("json", char.UTF8String()),
-        namedtype.NamedType("cbor", univ.OctetString()),
-    )
 
 
 # ── Criticality validation ───────────────────────────────────────────────────
@@ -211,46 +171,7 @@ def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
     placed verbatim into an X.509 ``Extension.extnValue`` OCTET STRING.
     """
     value_b64 = base64.urlsafe_b64encode(ear_jwt.encode("utf-8")).decode("ascii").rstrip("=")
-    record = json.dumps(["application/eat+jwt", value_b64], separators=(",", ":"))
-    cmw = CMW()
-    cmw.setComponentByName("json", char.UTF8String(record))
-    return encode_to_der(cmw)
-
-
-def encode_cmw_json_record(media_type: str, value: str, cmw_type: int | None = None) -> bytes:
-    """Return the DER of a CMW ``json`` record ``[media-type, value(, cmw-type)]``.
-
-    A generic CMW (Conceptual Message Wrapper) JSON *record*
-    (draft-ietf-rats-msg-wrap-23 §3) carried in the CMW ``json`` (UTF8String)
-    alternative (§4.4).  Unlike :func:`wrap_ear_in_cmw_json`, *value* is placed
-    verbatim — callers pass an already-serialised message (e.g. a compact JOSE
-    JWE string).  ``cmw_type`` adds the optional third element (the CMW type
-    indicator, e.g. ``4``).  The result is wire-identical to encoding the bare
-    ``UTF8String`` (a CHOICE encodes as its selected alternative in DER).
-    """
-    record = [media_type, value] if cmw_type is None else [media_type, value, cmw_type]
-    cmw = CMW()
-    cmw.setComponentByName("json", char.UTF8String(json.dumps(record, separators=(",", ":"))))
-    return encode_to_der(cmw)
-
-
-def decode_cmw_json_record(der: bytes) -> tuple[str, str, Optional[int]]:
-    """Decode a CMW ``json`` record DER into ``(media_type, value, cmw_type)``.
-
-    Accepts the DER of the :class:`CMW` CHOICE (or, wire-identically, a bare
-    ``UTF8String``).  Returns ``cmw_type`` as ``None`` when the record carries
-    only the two mandatory elements.
-
-    :raises ValueError: the bytes are not a CMW ``json`` record / malformed JSON.
-    """
-    cmw = try_decode_pyasn1(der, CMW)
-    if cmw.getName() != "json":
-        raise ValueError("CMW is not a json record (expected the UTF8String alternative)")
-    record = json.loads(str(cmw["json"]))
-    if not isinstance(record, list) or len(record) < 2:
-        raise ValueError(f"malformed CMW json record: {record!r}")
-    cmw_type = record[2] if len(record) > 2 else None
-    return record[0], record[1], cmw_type
+    return encode_cmw_json_record("application/eat+jwt", value_b64)
 
 
 def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
@@ -279,7 +200,7 @@ def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
         extension value content.
 
     """
-    if oid == ID_PE_CMW_DOTTED:
+    if oid == str(ID_PE_CMW):
         return oid, wrap_ear_in_cmw_json(ear_jwt)
     return oid, ear_jwt.encode("utf-8")
 
