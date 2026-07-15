@@ -5,6 +5,7 @@
 """Minimal attester-side client logic."""
 
 import logging
+from collections.abc import Collection
 from typing import Protocol
 
 from pyasn1.type import univ
@@ -29,6 +30,39 @@ class AttesterProvider(Protocol):
     def generate_evidence(self, nonce: bytes | None = None) -> AttestResult:
         """Generate evidence bound to an optional freshness nonce."""
         ...
+
+
+def resolve_evidence_generation_inputs(
+    nonce_response: NonceResponse,
+    provider_oids: Collection[str],
+    oid: str | univ.ObjectIdentifier | None = None,
+) -> tuple[str, bytes]:
+    """Return the Evidence OID and nonce selected for CMP evidence generation.
+
+    ``NonceResponse.respTypeInfo.type`` selects the syntax of ``respInfo``; it
+    does not generally identify the Evidence statement that an Attester must
+    produce.  An explicit *oid* therefore takes precedence, and an omitted OID
+    is inferred only when exactly one Evidence provider is registered.
+    """
+    nonce = bytes(nonce_response["nonce"])
+    if not nonce:
+        raise ValueError("CMP NonceResponse contains an empty nonce")
+
+    if oid is not None:
+        return str(oid), nonce
+    if len(provider_oids) == 1:
+        return next(iter(provider_oids)), nonce
+
+    response_oid = nonce_response_type_oid(nonce_response)
+    if response_oid is None:
+        raise ValueError(
+            "evidence OID is required when a CMP NonceResponse has no type field "
+            "and multiple providers are registered"
+        )
+    raise ValueError(
+        "evidence OID is required when multiple providers are registered; "
+        f"CMP NonceResponse response type {response_oid!r} selects respInfo, not Evidence"
+    )
 
 
 class AttesterClient:
@@ -83,19 +117,13 @@ class AttesterClient:
         nonce_response: NonceResponse,
         oid: str | univ.ObjectIdentifier | None = None,
     ) -> AttestResult:
-        """Generate evidence from a decoded CMP attestation freshness response."""
-        nonce = bytes(nonce_response["nonce"])
-        if not nonce:
-            raise ValueError("CMP NonceResponse contains an empty nonce")
+        """Generate evidence from a decoded CMP attestation freshness response.
 
-        selected_oid = str(oid) if oid is not None else None
-        if selected_oid is None:
-            selected_oid = nonce_response_type_oid(nonce_response)
-        if selected_oid is None and len(self._providers) == 1:
-            selected_oid = next(iter(self._providers))
-        if selected_oid is None:
-            raise ValueError("oid is required when CMP NonceResponse has no type field")
-
+        *oid* is an Evidence statement OID.  It is required when multiple
+        providers are registered because ``respTypeInfo.type`` selects the
+        response payload syntax rather than Evidence.
+        """
+        selected_oid, nonce = resolve_evidence_generation_inputs(nonce_response, self._providers, oid)
         return self.generate_evidence(selected_oid, nonce)
 
     @staticmethod

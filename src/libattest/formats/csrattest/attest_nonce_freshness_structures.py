@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from pyasn1.type import constraint, namedtype, univ
 
-id_it_nonceRequest = univ.ObjectIdentifier("1.3.6.1.5.5.7.4.98")
-id_it_nonceResponse = univ.ObjectIdentifier("1.3.6.1.5.5.7.4.99")
+# Placeholder values (TBD1/TBD2 in draft-ietf-lamps-attestation-freshness) pending
+# IANA assignment. These are the values on the wire: they match the infoType of the
+# checked-in sample messages (req1-genm.der / rsp1-genp.der) and the CMP MockCA.
+id_it_nonceRequest = univ.ObjectIdentifier("1.2.840.113549.1.9.16.2.8888")
+id_it_nonceResponse = univ.ObjectIdentifier("1.2.840.113549.1.9.16.2.8889")
 
 _MIN_NONCE_LEN = 8
 _MAX_NONCE_LEN = 64

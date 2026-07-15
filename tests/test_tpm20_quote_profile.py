@@ -59,9 +59,15 @@ def test_quote_info_helpers_return_any_payloads() -> None:
     assert decode_tpm20_quote_resp_info(resp_info) == (None, [0, 1, 2, 3], TPM_ALG_SHA256)
 
 
-def test_quote_profile_exports_placeholder_type_oids() -> None:
+def test_quote_profile_exports_distinct_request_and_response_type_oids() -> None:
+    # Request and response are distinct wire positions and carry distinct OIDs.
+    # These exact values are on the checked-in end-to-end example messages
+    # (req1-genm.der / rsp1-genp.der) and are matched by the gencmpclient C
+    # attester, so changing them invalidates both. Env-overridable in lockstep
+    # via TPM_PCR_SELECTION_OID / TPM_QUOTE_RESP_OID.
     assert str(id_tpm20_quote_req) == "1.2.3.4.5"
     assert str(id_tpm20_quote_res) == "1.2.3.4.6"
+    assert str(id_tpm20_quote_req) != str(id_tpm20_quote_res)
 
 
 def test_quote_response_rejects_empty_pcr_selection_and_bad_hash() -> None:

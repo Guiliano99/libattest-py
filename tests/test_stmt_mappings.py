@@ -10,6 +10,7 @@ from pyasn1.type import univ
 from pyasn1_alt_modules import rfc5280
 
 from libattest.formats.cmw import CMW
+from libattest.formats.ear_extension import EARExtension, id_ear_extension
 from libattest.formats.eareat_hpke import (
     EVIDENCE_ENC_PARAMS_OID,
     resolve_cose_evidence_enc_oid,
@@ -23,8 +24,10 @@ from libattest.formats.key_attest_pop import (
 )
 from libattest.formats.stmt_mappings import (
     ATTESTATION_STATEMENT_STRUCTURES,
+    EXTENSION_STRUCTURES,
     NONCE_REQUEST_STATEMENT_STRUCTURES,
     NONCE_RESPONSE_STATEMENT_STRUCTURES,
+    get_extension_structure,
     get_nonce_request_oid_for_name,
     get_nonce_request_statement_decoder,
     get_nonce_request_statement_structure,
@@ -97,6 +100,16 @@ def test_key_attest_chall_and_evidence_enc_params_oids_map_to_their_asn1_structu
     assert get_nonce_request_statement_structure(key_attest_oid) is KeyAttestChall
     assert NONCE_RESPONSE_STATEMENT_STRUCTURES[EVIDENCE_ENC_PARAMS_OID] is rfc5280.SubjectPublicKeyInfo
     assert get_nonce_response_statement_structure(EVIDENCE_ENC_PARAMS_OID) is rfc5280.SubjectPublicKeyInfo
+
+
+def test_ear_extension_oid_maps_to_utf8string_structure() -> None:
+    """GIVEN the EAR extension OID THEN its extension and statement syntax is EARExtension."""
+    oid = get_oid_by_name("ear-extension")
+
+    assert oid == str(id_ear_extension)
+    assert EXTENSION_STRUCTURES[oid] is EARExtension
+    assert get_extension_structure(oid) is EARExtension
+    assert ATTESTATION_STATEMENT_STRUCTURES[oid] is EARExtension
 
 
 def test_oid_accessors_agree_with_the_underlying_resolvers() -> None:

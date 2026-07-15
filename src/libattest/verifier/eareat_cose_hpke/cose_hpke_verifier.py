@@ -41,7 +41,7 @@ from libattest.formats import eareat_hpke as evidence
 from libattest.formats.eat_ear import cwt_jwt_utils
 from libattest.formats.eat_ear.cwt_jwt import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
 from libattest.formats.eat_ear.cwt_jwt_utils import open_cose_hpke_evidence
-from libattest.media_types import EAT_CWT, base_media_type
+from libattest.formats.media_types import EAT_CWT, base_media_type
 from libattest.types import VerifyResult
 from libattest.verifier.base import AttestationVerifier
 from libattest.verifier.eat_appraisal import check_nonce_and_claim

@@ -11,6 +11,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from tpm2_pytss.types import TPMT_SIGNATURE
 
+from libattest.formats.media_types import TPM_PLATFORM_MEDIA_TYPE
 from libattest.formats.tpm.tpm_signature import to_tpm2b_public
 from libattest.formats.tpm.tpms_attest import (
     TPM_ALG_ECDSA,
@@ -96,7 +97,7 @@ def _verify_ak_signature(evidence: TpmQuoteSignatureEvidence) -> tuple[bool, str
 class TpmPlatformVerifier(TpmReferenceVerifier):
     """Verifier for TPM platform evidence."""
 
-    media_type = "application/vnd.tcg.platform"
+    media_type = TPM_PLATFORM_MEDIA_TYPE
 
     @staticmethod
     def _parse_attest_or_contraindicate(

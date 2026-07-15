@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright 2026 Siemens AG
 # SPDX-License-Identifier: Apache-2.0
 
-"""OID-selected CMP nonce payload structures and evidence-statement structures.
+"""OID-selected CMP payload structures, evidence statements, and extensions.
 
 The type-specific ``reqInfo`` and ``respInfo`` fields, and the evidence
 ``AttestationStatement.stmt`` field, are ASN.1 ``ANY`` values. Their
 surrounding OID selects the only ASN.1 structure that is safe to decode them
 against. ``NONCE_REQUEST_STATEMENT_STRUCTURES`` and
 ``NONCE_RESPONSE_STATEMENT_STRUCTURES`` are the explicit reqInfo/respInfo
-OID-to-ASN.1 structure dictionaries. ``ATTESTATION_STATEMENT_STRUCTURES`` maps
-evidence statement OIDs to their proper ASN.1 payload structures.
+OID-to-ASN.1 structure dictionaries. ``ATTESTATION_STATEMENT_STRUCTURES``
+maps evidence statement OIDs to their proper ASN.1 payload structures.
+``EXTENSION_STRUCTURES`` maps certificate extension OIDs to their ASN.1 value
+structures.
 """
 
 from __future__ import annotations
@@ -22,7 +24,11 @@ from pyasn1_alt_modules import rfc5280
 
 from libattest.asn1_utils import try_decode_pyasn1
 from libattest.formats.cmw import CMW, ID_PE_CMW
-from libattest.formats.ear_extension import DEMO_EAR_EXTENSION_OID
+from libattest.formats.ear_extension import (
+    DEMO_EAR_EXTENSION_OID,
+    EARExtension,
+    id_ear_extension,
+)
 from libattest.formats.eareat_hpke import (
     EVIDENCE_ENC_PARAMS_OID,
     resolve_cose_evidence_enc_oid,
@@ -37,7 +43,6 @@ from libattest.formats.key_attest_pop import (
 from libattest.formats.tpm import (
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
-    decode_tpm20_quote_req_info_asn1,
     id_tpm20_quote_req,
     id_tpm20_quote_res,
 )
@@ -63,7 +68,18 @@ ATTESTATION_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     resolve_evidence_enc_oid(): univ.OctetString,
     resolve_cose_evidence_enc_oid(): CMW,
     str(ID_PE_CMW): CMW,
+    # The same syntax is also valid when a caller carries the EAR value as an
+    # OID-selected opaque statement rather than as an X.509 extension.
+    str(id_ear_extension): EARExtension,
 }
+
+EXTENSION_STRUCTURES: dict[str, StatementStructure] = {
+    str(id_ear_extension): EARExtension,
+}
+
+# Descriptive alias for callers that want to make the EAR-specific purpose
+# explicit while retaining the generic extension map above.
+EAR_EXTENSION_STRUCTURES = EXTENSION_STRUCTURES
 
 
 def get_nonce_request_statement_structure(
@@ -80,6 +96,13 @@ def get_nonce_response_statement_structure(
     return NONCE_RESPONSE_STATEMENT_STRUCTURES.get(str(oid))
 
 
+def get_extension_structure(
+    oid: str | univ.ObjectIdentifier,
+) -> StatementStructure | None:
+    """Return the ASN.1 structure selected by an X.509 extension OID."""
+    return EXTENSION_STRUCTURES.get(str(oid))
+
+
 def nonce_request_statement_decoders() -> dict[str, StatementDecoder]:
     """Return the resolved ``NonceRequest.reqInfo`` OID-to-decoder mapping.
 
@@ -93,15 +116,13 @@ def nonce_request_statement_decoders() -> dict[str, StatementDecoder]:
 
 
 def _request_decoder_for(structure: StatementStructure) -> StatementDecoder:
-    """Pick a reqInfo decoder for *structure*.
+    """Return a schema-driven reqInfo decoder for *structure*.
 
-    ``TPM20QuoteReqInfoASN1``'s two OPTIONAL fields share the universal SEQUENCE
-    tag and cannot be schema-decoded (X.680 §8), so it routes through the
-    inner-tag disambiguating object decoder; every other structure decodes
-    directly via :func:`~libattest.asn1_utils.try_decode_pyasn1`.
+    Every registered structure (including ``TPM20QuoteReqInfoASN1``, whose two
+    OPTIONAL fields are IMPLICIT ``[0]``/``[1]`` tagged so they decode
+    unambiguously) is a direct :func:`~libattest.asn1_utils.try_decode_pyasn1`
+    call — no per-type special-casing needed.
     """
-    if structure is TPM20QuoteReqInfoASN1:
-        return decode_tpm20_quote_req_info_asn1
     return lambda der, spec=structure: try_decode_pyasn1(der, spec)
 
 
@@ -144,7 +165,8 @@ _NONCE_RESPONSE_OID_BY_NAME: dict[str, str] = {
 }
 
 _EXTENSION_OID_BY_NAME: dict[str, str] = {
-    # Deployment default for the legacy raw-EAR-JWT certificate extension.
+    # Deployment default for the UTF8String EAR certificate extension.
+    "ear-extension": str(id_ear_extension),
     "demo-ear-extension": DEMO_EAR_EXTENSION_OID,
 }
 
@@ -213,6 +235,8 @@ def get_oid_by_name(name: str) -> str:
 
 __all__ = [
     "ATTESTATION_STATEMENT_STRUCTURES",
+    "EAR_EXTENSION_STRUCTURES",
+    "EXTENSION_STRUCTURES",
     "NONCE_REQUEST_STATEMENT_STRUCTURES",
     "NONCE_RESPONSE_STATEMENT_STRUCTURES",
     "StatementDecoder",
@@ -223,6 +247,7 @@ __all__ = [
     "get_nonce_request_statement_structure",
     "get_nonce_response_oid_for_name",
     "get_nonce_response_statement_structure",
+    "get_extension_structure",
     "get_oid_by_name",
     "get_oid_for_stmt_name",
     "nonce_request_statement_decoders",

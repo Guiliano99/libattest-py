@@ -65,14 +65,23 @@ def _default_encode_ear_extension(ear_oid: str) -> Callable[[str], tuple[str, by
     """Bind libattest's ``encode_ear_extension`` to *ear_oid* for a profile.
 
     The returned callable maps an EAR JWT to ``(oid, extn_value_der)`` —
-    CMW-wrapped when *ear_oid* is ``id-pe-cmw``, raw JWT bytes otherwise.
+    CMW-wrapped when *ear_oid* is ``id-pe-cmw``, otherwise DER-encoded using
+    the EAR extension's UTF8String syntax.
     """
     return functools.partial(_libattest_encode_ear_extension, oid=ear_oid)
 
 
 def _default_ear_extension_oid() -> str:
     """Return the configured EAR extension OID or the centrally registered demo default."""
-    return os.environ.get("EAR_OID", get_oid_by_name("demo-ear-extension"))
+    value = os.environ.get("EAR_OID")
+    if value is not None and value.strip():
+        return value.strip()
+    return get_oid_by_name("demo-ear-extension")
+
+
+def _effective_ear_extension_oid(ear_oid: str | None) -> str:
+    """Return an explicit profile OID or resolve the current ``EAR_OID`` value."""
+    return _default_ear_extension_oid() if ear_oid is None else ear_oid
 
 
 @dataclass
@@ -83,6 +92,13 @@ class AttestationProfile:
     ----------
     request_type_oid:
         Dot-form ``NonceRequest.reqTypeInfo.type`` OID (nonce-issue side).
+    response_type_oid:
+        Dot-form ``NonceResponse.respTypeInfo.type`` OID (nonce-answer side).
+        Request and response are distinct wire positions, so a profile may use a
+        different OID in each (the TPM quote profile does).  Defaults to
+        ``request_type_oid`` — the same-OID case used by the jwt and
+        key-attestation profiles, where the position alone selects the syntax.
+        Never derive Evidence selection from this value (see UPDATE.md).
     statement_oid:
         Dot-form ``AttestationStatement.type`` OID (evidence side).
     build_resp_info:
@@ -129,6 +145,7 @@ class AttestationProfile:
     statement_oid: str
     build_resp_info: Callable[[int | None], bytes | None]
     resp_info_to_json: Callable[[bytes], dict]
+    response_type_oid: str | None = None  # None -> same OID as the request (see __post_init__)
     resp_info_label: str = "respInfo"
     parse_req_info: Callable[[bytes | None], int | None] = _no_req_info
     unwrap_statement: Callable[[bytes], tuple[bytes, bool]] = unwrap_attestation_statement
@@ -141,7 +158,12 @@ class AttestationProfile:
     build_challenge: Callable[[bytes | None, AttestationVerifier], tuple[bytes | None, str | None]] | None = None
 
     def __post_init__(self) -> None:
-        """Validate that a verifier is reachable (instance or URL)."""
+        """Default the response OID to the request's, and validate the verifier."""
+        # Same-OID profiles (jwt, key-attest) answer under the request's OID; the
+        # wire position still selects the syntax. Profiles whose response OID
+        # differs (TPM quote) pass it explicitly.
+        if self.response_type_oid is None:
+            self.response_type_oid = self.request_type_oid
         if self.verifier is None and not self.verifier_url:
             raise ValueError(
                 f"AttestationProfile for statement={self.statement_oid} needs either "
@@ -179,7 +201,7 @@ def tpm_profile(
     pcrs: list[int] | None = None,
     certificate_name: str | None = None,
     resp_info_label: str = "TPM20QuoteRespInfo",
-    ear_oid: str = _default_ear_extension_oid(),
+    ear_oid: str | None = None,
 ) -> AttestationProfile:
     """Build an :class:`AttestationProfile` for the TPM 2.0 quote profile.
 
@@ -238,6 +260,9 @@ def tpm_profile(
 
     return AttestationProfile(
         request_type_oid=request_type_oid,
+        # The quote profile answers under a DIFFERENT OID than it was asked
+        # under; respTypeInfo.type selects the TPM20QuoteRespInfo syntax.
+        response_type_oid=get_nonce_response_oid_for_name("tpm-quote"),
         statement_oid=statement_oid,
         build_resp_info=selected_build_resp_info,
         resp_info_to_json=lambda der: DEFAULT_RESP_INFO_REGISTRY.to_json(
@@ -245,7 +270,7 @@ def tpm_profile(
         ),
         resp_info_label=resp_info_label,
         parse_req_info=parse_req_info,
-        encode_ear_extension=_default_encode_ear_extension(ear_oid),
+        encode_ear_extension=_default_encode_ear_extension(_effective_ear_extension_oid(ear_oid)),
         verifier=verifier,
         verifier_url=verifier_url,
         reference_handler=reference_handler,
@@ -259,7 +284,7 @@ def jwt_profile(
     verifier: AttestationVerifier | None = None,
     verifier_url: str | None = None,
     reference_handler: VerifierReferenceHandler | None = None,
-    ear_oid: str = _default_ear_extension_oid(),
+    ear_oid: str | None = None,
     resp_info_label: str = "respInfo",
 ) -> AttestationProfile:
     """Build an :class:`AttestationProfile` for opaque-JWT evidence.
@@ -267,7 +292,8 @@ def jwt_profile(
     Mirrors the MockCA ``jwt_route`` factory: a URL/verifier-only profile with
     no respInfo and no reqInfo negotiation.  The evidence ``stmt`` is an OCTET
     STRING (the libattest default unwrap strips it), and the EAR JWT is embedded
-    under *ear_oid* (raw bytes, or CMW-wrapped when *ear_oid* is ``id-pe-cmw``).
+    under *ear_oid* (UTF8String DER, or CMW-wrapped when *ear_oid* is
+    ``id-pe-cmw``).
     """
     return AttestationProfile(
         request_type_oid=request_type_oid,
@@ -275,7 +301,7 @@ def jwt_profile(
         build_resp_info=lambda _proposed: None,
         resp_info_to_json=lambda der: {},
         resp_info_label=resp_info_label,
-        encode_ear_extension=_default_encode_ear_extension(ear_oid),
+        encode_ear_extension=_default_encode_ear_extension(_effective_ear_extension_oid(ear_oid)),
         verifier=verifier,
         verifier_url=verifier_url,
         reference_handler=reference_handler,
@@ -289,7 +315,7 @@ def key_attest_profile(
     verifier: AttestationVerifier | None = None,
     verifier_url: str | None = None,
     reference_handler: VerifierReferenceHandler | None = None,
-    ear_oid: str = _default_ear_extension_oid(),
+    ear_oid: str | None = None,
     resp_info_label: str = "KeyAttestResp",
 ) -> AttestationProfile:
     """Build an :class:`AttestationProfile` for v5 TPM key attestation (credential activation).
@@ -339,7 +365,7 @@ def key_attest_profile(
         resp_info_to_json=lambda _der: {},  # respInfo is not forwarded to the verifier as JSON
         resp_info_label=resp_info_label,
         build_challenge=build_challenge,
-        encode_ear_extension=_default_encode_ear_extension(ear_oid),
+        encode_ear_extension=_default_encode_ear_extension(_effective_ear_extension_oid(ear_oid)),
         verifier=verifier,
         verifier_url=verifier_url,
         reference_handler=reference_handler,

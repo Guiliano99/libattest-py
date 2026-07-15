@@ -11,10 +11,6 @@ from libattest.formats.stmt_mappings import (
     get_nonce_request_statement_structure,
     get_nonce_response_statement_structure,
 )
-from libattest.formats.tpm.quote_profile import (
-    TPM20QuoteReqInfoASN1,
-    decode_tpm20_quote_req_info_asn1,
-)
 
 
 def load_pki_message(data: Union[bytes, bytearray]) -> rfc9480.PKIMessage:
@@ -73,11 +69,6 @@ def _decode_req_info(nonce_req: NonceRequest) -> object | None:
             f"(see .claude/skills/libattest-py-update-stmt/SKILL.md)."
         )
     raw = bytes(type_info["reqInfo"])
-    if structure is TPM20QuoteReqInfoASN1:
-        # certificateName/supportedHashAlgo share the universal SEQUENCE tag, so a
-        # schema-driven decode is ambiguous (X.680 §8); use the inner-tag
-        # disambiguating decoder that returns a populated display object.
-        return decode_tpm20_quote_req_info_asn1(raw)
     return try_decode_pyasn1(raw, structure)
 
 

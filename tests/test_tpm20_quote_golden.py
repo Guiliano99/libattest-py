@@ -3,11 +3,11 @@
 
 """Golden canonical-DER + range-constraint contract for TPM20Quote payloads.
 
-The golden hex vectors below are the *exact* bytes emitted by the gencmpclient C
-encoder (i2d_TPM20_QUOTE_REQ_INFO / i2d_TPM20_QUOTE_RESP_INFO) — captured from the
-g2 build smoke.  Because DER is canonical, the Python and C encoders MUST agree
-byte-for-byte for the same logical value; this test is the cross-language anchor.
-If it fails, the two ASN.1 definitions have drifted.
+The golden hex vectors below are the *exact* bytes the gencmpclient C encoder
+(i2d_TPM20_QUOTE_REQ_INFO / i2d_TPM20_QUOTE_RESP_INFO, ``rats_csr_asn.c``) emits
+for the same logical value. Because DER is canonical, the Python and C
+encoders MUST agree byte-for-byte; this test is the cross-language anchor. If
+it fails, the two ASN.1 definitions have drifted.
 """
 
 from __future__ import annotations
@@ -21,15 +21,15 @@ from libattest.formats.tpm.quote_profile import (
     encode_tpm20_quote_resp_info,
 )
 
-# TPM20QuoteReqInfo.certificateName/supportedHashAlgo carry their natural
-# universal SEQUENCE-OF tags, matching the gencmpclient C encoder's
-# historical untagged form (i2d_TPM20_QUOTE_REQ_INFO) — byte-for-byte
-# cross-language interop. The two OPTIONAL fields share the SEQUENCE tag but
-# have distinct inner element types (UTF8String vs INTEGER); a message
-# carrying both (the shape every demo sends) decodes unambiguously. See
-# docs/adr/0003-asn1-utils-and-strict-der-decoding.md (revert note).
-REQ_GOLDEN = bytes.fromhex("300b30040c02616b300302010b")
-# Emitted by the gencmpclient C smoke (scratchpad/g2build), untagged SEQUENCE OF.
+# TPM20QuoteReqInfo.certificateName/supportedHashAlgo are IMPLICIT [0]/[1]
+# context-tagged (see quote_profile.TPM20QuoteReqInfoASN1) so the two OPTIONAL
+# fields — which would otherwise share one universal SEQUENCE OF tag — decode
+# unambiguously via schema-driven decode. rats_csr_asn.c's
+# ASN1_IMP_SEQUENCE_OF_OPT(..., 0) / (..., 1) fields must match these tags.
+REQ_GOLDEN = bytes.fromhex("300ba0040c02616ba10302010b")
+# TPM20QuoteRespInfo's fields are unambiguous without tagging (certificateName
+# is a plain UTF8String, not a SEQUENCE OF; pcrSelection/hashAlgo are
+# mandatory), so this one carries its natural universal tags, unchanged.
 RESP_GOLDEN = bytes.fromhex("30180c02616b300f02010002010102010202010302010402010b")
 
 SHA256 = 11  # TPM_ALG_SHA256

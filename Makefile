@@ -9,6 +9,7 @@ help:
 	@echo  '  setup              - Set up the python environment (creating env. and install dependencies)'
 	@echo  '  setup-dev          - Set up the python environment for development (creating env. and install dependencies, including dev dependencies)'
 	@echo  '  unit_tests         - Run all compliance tests.'
+	@echo  '  check-oids         - Audit centralized OID ownership and references.'
 	@echo  '  show-outdated      - Show outdated python dependencies.'
 	@echo  ''
 	@echo  'TPM attestation tests (Docker — no local TPM libraries needed):'
@@ -24,6 +25,9 @@ help:
 unit_tests:
 	# Run the tests itself.
 	python3 -m unittest discover -s tests
+
+check-oids:
+	python3 scripts/check_oid_access.py
 
 setup:
 	@echo "Setting up the python environment..."

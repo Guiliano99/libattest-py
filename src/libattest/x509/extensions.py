@@ -9,6 +9,8 @@ Currently exposes:
 * The Conceptual Messages Wrapper (CMW) extension defined in
   :rfc-draft:`draft-ietf-rats-msg-wrap-23` §4.4 — see :class:`CMW` and
   :func:`parse_cmw_extension_value`.
+* The EAR extension, whose value is an ASN.1 ``UTF8String`` carrying the
+  compact EAR JWT — see :func:`encode_ear_extension`.
 
 CMW is non-critical per draft §4.4.6.
 
@@ -63,6 +65,8 @@ from typing import Optional, Union
 from libattest import get_oid_by_name
 from libattest.asn1_utils import try_decode_pyasn1
 from libattest.formats.cmw import CMW, encode_cmw_json_record
+from libattest.formats.ear_extension import encode_ear_extension_value
+from libattest.formats.media_types import EAT_JWT
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +160,7 @@ def validate_cmw_extension(
     return True
 
 
-# ── EAR extension encoding (CMW vs raw JWT) ──────────────────────────────────
+# ── EAR extension encoding (CMW vs UTF8String) ───────────────────────────────
 
 
 def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
@@ -172,7 +176,7 @@ def wrap_ear_in_cmw_json(ear_jwt: str) -> bytes:
     placed verbatim into an X.509 ``Extension.extnValue`` OCTET STRING.
     """
     value_b64 = base64.urlsafe_b64encode(ear_jwt.encode("utf-8")).decode("ascii").rstrip("=")
-    return encode_cmw_json_record("application/eat+jwt", value_b64)
+    return encode_cmw_json_record(EAT_JWT, value_b64)
 
 
 def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
@@ -183,8 +187,9 @@ def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
     * ``oid == id-pe-cmw`` (available as ``get_oid_by_name("cmw")``) → the value is a CMW JSON
       record wrapping the EAR JWT (draft-ietf-rats-msg-wrap-23 §4.4), produced by
       :func:`wrap_ear_in_cmw_json`.
-    * any other *oid* (e.g. a demo/private OID) → the value is the raw EAR JWT
-      bytes (``ear_jwt.encode("utf-8")``), placed verbatim.
+    * any other *oid* (including the registered EAR-extension OID) → the value
+      is the DER encoding of an ASN.1 ``UTF8String`` carrying the EAR JWT,
+      produced by :func:`~libattest.formats.ear_extension.prepare_ear_extension`.
 
     Parameters
     ----------
@@ -203,7 +208,7 @@ def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
     """
     if oid == get_oid_by_name("cmw"):
         return oid, wrap_ear_in_cmw_json(ear_jwt)
-    return oid, ear_jwt.encode("utf-8")
+    return oid, encode_ear_extension_value(ear_jwt)
 
 
 def unwrap_context_tag(der: bytes) -> bytes:

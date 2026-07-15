@@ -20,12 +20,14 @@ from libattest.formats.csrattest import (
     prepare_opaque_attestation_statement,
 )
 from libattest.ra import (
+    BadNonceRequest,
     NonceStore,
     ProfileRegistry,
     RemoteAttestationEngine,
     ReplayError,
     jwt_profile,
     key_attest_profile,
+    tpm_profile,
 )
 from libattest.testing.fakes import InMemoryVerifier
 from libattest.types import EarStatus, VerifyResult
@@ -224,3 +226,114 @@ def test_engine_replay_bundle_after_consume_is_unknown():
     second = engine.verify_bundle(_bundle(), TX)
     assert not second.accepted
     assert second.result.per_statement[0].status == EarStatus.unknown
+
+
+# ── build_nonce_response ───────────────────────────────────────────────────────
+
+
+def test_build_nonce_response_same_oid_profile_echoes_request_type():
+    """GIVEN a jwt_profile (one OID both ways) WHEN a response is built THEN it echoes the request type."""
+    engine = _engine(InMemoryVerifier())
+
+    response = engine.build_nonce_response(TX, OID)
+
+    assert bytes(response["nonce"])  # a real nonce was issued
+    assert str(response["respTypeInfo"]["type"]) == OID
+
+
+def test_build_nonce_response_quote_profile_uses_the_distinct_response_oid():
+    """GIVEN a tpm_profile (distinct req/res OIDs) WHEN a response is built THEN it uses the RESPONSE oid, not the request oid echoed back."""
+    from libattest.formats.tpm import id_tpm20_quote_req, id_tpm20_quote_res
+
+    request_oid = str(id_tpm20_quote_req)
+    response_oid = str(id_tpm20_quote_res)
+    assert request_oid != response_oid  # the profile under test is genuinely position-scoped
+
+    profiles = ProfileRegistry()
+    profiles.register(
+        tpm_profile(
+            request_type_oid=request_oid,
+            statement_oid="1.3.6.1.4.1.99999.9",
+            verifier=InMemoryVerifier(),
+            pcrs=[0, 1, 2],
+        )
+    )
+    engine = RemoteAttestationEngine(profiles)
+
+    response = engine.build_nonce_response(TX, request_oid)
+
+    assert str(response["respTypeInfo"]["type"]) == response_oid
+    assert str(response["respTypeInfo"]["type"]) != request_oid
+
+
+def test_build_nonce_response_unregistered_oid_falls_back_to_echo():
+    """GIVEN a request type with no registered profile WHEN a response is built THEN the type is echoed back."""
+    engine = _engine(InMemoryVerifier())
+    other_oid = "1.3.6.1.4.1.99999.42"
+
+    response = engine.build_nonce_response(TX, other_oid)
+
+    assert str(response["respTypeInfo"]["type"]) == other_oid
+
+
+def test_build_nonce_response_no_request_type_omits_resp_type_info():
+    """GIVEN a request with no type at all WHEN a response is built THEN respTypeInfo is omitted."""
+    engine = _engine(InMemoryVerifier())
+
+    response = engine.build_nonce_response(TX, None)
+
+    assert not response["respTypeInfo"].isValue
+
+
+def test_build_nonce_response_rejects_length_below_minimum():
+    """GIVEN a requested length under the minimum WHEN a response is built THEN BadNonceRequest is raised."""
+    engine = _engine(InMemoryVerifier())
+
+    with pytest.raises(BadNonceRequest):
+        engine.build_nonce_response(TX, OID, requested_len=4, min_nonce_length=32)
+
+
+def test_build_nonce_response_sets_expiry_when_given():
+    engine = _engine(InMemoryVerifier())
+
+    response = engine.build_nonce_response(TX, OID, expiry_time=50)
+
+    assert int(response["expiry"]) == 50
+
+
+# ── first_ear_extension ─────────────────────────────────────────────────────────
+
+
+def test_first_ear_extension_resolves_the_affirming_statements_profile():
+    verifier = InMemoryVerifier(result=VerifyResult.affirming("ear.jwt.token"))
+    engine = _engine(verifier)
+    engine.issue_nonce(TX, OID)
+
+    outcome = engine.verify_bundle(_bundle(), TX)
+
+    assert outcome.accepted
+    ext = outcome.first_ear_extension
+    assert ext is not None
+    oid_dot, extn_der = ext
+    assert isinstance(oid_dot, str)
+    assert isinstance(extn_der, bytes)
+    assert extn_der  # non-empty DER
+
+
+def test_first_ear_extension_is_none_when_nothing_affirmed():
+    verifier = InMemoryVerifier(result=VerifyResult.contraindicated("bad evidence"))
+    engine = _engine(verifier)
+    engine.issue_nonce(TX, OID)
+
+    outcome = engine.verify_bundle(_bundle(), TX)
+
+    assert not outcome.accepted
+    assert outcome.first_ear_extension is None
+
+
+def test_first_ear_extension_is_none_on_bundle_decode_failure():
+    engine = _engine(InMemoryVerifier())
+
+    outcome = engine.verify_bundle(b"\x00\x01not-a-bundle", TX)
+
+    assert outcome.first_ear_extension is None

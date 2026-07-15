@@ -29,6 +29,7 @@ from libattest.formats.csrattest import (
     prepare_opaque_attestation_statement,
     unwrap_attestation_statement,
 )
+from libattest.formats.ear_extension import EARExtension, prepare_ear_extension
 from libattest.x509 import (
     CMW,
     encode_ear_extension,
@@ -119,10 +120,21 @@ def test_prepare_multi_statement_bundle_honors_is_asn1_evidence():
 
 
 def test_encode_ear_extension_demo_oid():
-    """GIVEN the named demo OID WHEN encoding an EAR THEN the raw JWT representation is used."""
+    """GIVEN the named demo OID WHEN encoding an EAR THEN a UTF8String is used."""
     oid, value = encode_ear_extension("a.b.c", oid=get_oid_by_name("demo-ear-extension"))
     assert oid == get_oid_by_name("demo-ear-extension")
-    assert value == b"a.b.c"
+    assert value[0] == 0x0C  # UTF8String
+    decoded, rest = der_decoder.decode(value, asn1Spec=EARExtension())
+    assert rest == b""
+    assert str(decoded) == "a.b.c"
+
+
+def test_prepare_ear_extension_returns_utf8string():
+    """GIVEN an EAR JWT WHEN prepared THEN the typed UTF8String is populated."""
+    value = prepare_ear_extension("ear.jwt")
+
+    assert isinstance(value, EARExtension)
+    assert str(value) == "ear.jwt"
 
 
 def test_encode_ear_extension_cmw_oid_wraps_record():

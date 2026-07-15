@@ -7,22 +7,29 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from pyasn1.type import char, constraint, namedtype, univ
+from pyasn1.type import char, constraint, namedtype, tag, univ
 
 from libattest.asn1_utils import encode_to_der, try_decode_pyasn1
+from libattest.formats._oid_json import resolve_env_oid
 
-id_tpm20_quote_req = univ.ObjectIdentifier("1.2.3.4.5")
-id_tpm20_quote_res = univ.ObjectIdentifier("1.2.3.4.6")
+# The quote profile uses a DISTINCT OID per nonce direction: the request type
+# selects the reqInfo syntax, the response type selects the respInfo syntax.
+# These values are the ones carried by the checked-in end-to-end example
+# messages, so changing a default invalidates those captures.
+#
+# Both are env-overridable under the same names the gencmpclient C attester
+# reads, so a deployment can retarget the pair without a code change (this is
+# what the MockCA's former pcr_selection.py provided).
+TPM_QUOTE_REQ_OID_ENV: str = "TPM_PCR_SELECTION_OID"
+TPM_QUOTE_REQ_OID_DEFAULT: str = "1.2.3.4.5"
+TPM_QUOTE_RES_OID_ENV: str = "TPM_QUOTE_RESP_OID"
+TPM_QUOTE_RES_OID_DEFAULT: str = "1.2.3.4.6"
+
+id_tpm20_quote_req = univ.ObjectIdentifier(resolve_env_oid(TPM_QUOTE_REQ_OID_ENV, TPM_QUOTE_REQ_OID_DEFAULT))
+id_tpm20_quote_res = univ.ObjectIdentifier(resolve_env_oid(TPM_QUOTE_RES_OID_ENV, TPM_QUOTE_RES_OID_DEFAULT))
 
 _PCR_INDEX_MAX = 23  # Hardware TPMs expose 24 PCRs per bank (indices 0..23)
 _TPM_ALG_ID_MAX = 0xFFFF
-
-# TPM20QuoteReqInfo's two OPTIONAL fields share the universal SEQUENCE tag, so
-# schema-driven decode cannot tell them apart (X.680 §8). They are disambiguated
-# by their inner element type: certificateName wraps UTF8String, supportedHashAlgo
-# wraps INTEGER.
-_UTF8_TAG_SET = char.UTF8String().tagSet
-_INTEGER_TAG_SET = univ.Integer().tagSet
 
 
 class TPMAlgId(univ.Integer):
@@ -50,24 +57,34 @@ class _PCRIndexSequence(univ.SequenceOf):
 
 
 class TPM20QuoteReqInfoASN1(univ.Sequence):
-    """TPM20QuoteReqInfo ::= SEQUENCE { certificateName, supportedHashAlgo }.
+    """TPM20QuoteReqInfo ::= SEQUENCE { certificateName [0], supportedHashAlgo [1] }.
 
-    Both OPTIONAL fields carry their natural universal ``SEQUENCE OF`` tag —
-    matching the historical untagged wire form that the gencmpclient C side
-    (``i2d_TPM20_QUOTE_REQ_INFO``) emits, so DER produced by either side
-    round-trips through the other. This reverts the IMPLICIT ``[0]``/``[1]``
-    retag of docs/adr/0003 (which had diverged from the C wire): the two
-    fields share the universal SEQUENCE tag but have distinct *inner* element
-    types (``certificateName`` is ``SEQUENCE OF UTF8String``, ``supportedHashAlgo``
-    is ``SEQUENCE OF INTEGER``), so a message carrying both — the shape every
-    demo sends — decodes unambiguously. (A message omitting ``certificateName``
-    while carrying ``supportedHashAlgo`` is the one theoretically ambiguous
-    case, per X.680 §8; no producer emits it.)
+    Both OPTIONAL fields are IMPLICIT context-tagged (0/1): without distinguishing
+    tags they would share the same universal SEQUENCE OF tag and be structurally
+    ambiguous for a schema-driven decode (ASN.1 X.680 §8 — an OPTIONAL SEQUENCE
+    component that is itself a SEQUENCE OF cannot be told apart from the next
+    one without either a distinguishing tag or content inspection).
+
+    Requires the gencmpclient C encoder (``i2d_TPM20_QUOTE_REQ_INFO``,
+    ``rats_csr_asn.c``) to emit the matching ``[0]``/``[1]`` IMPLICIT tags —
+    see that file's ``ASN1_IMP_SEQUENCE_OF_OPT`` fields. Both sides must change
+    together: a mismatch here previously broke every real genm capture (the C
+    side emitted the historical untagged form while only Python was retagged).
     """
 
     componentType = namedtype.NamedTypes(
-        namedtype.OptionalNamedType("certificateName", _CertificateNameSequence()),
-        namedtype.OptionalNamedType("supportedHashAlgo", _TPMAlgIdSequence()),
+        namedtype.OptionalNamedType(
+            "certificateName",
+            _CertificateNameSequence().subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 0)
+            ),
+        ),
+        namedtype.OptionalNamedType(
+            "supportedHashAlgo",
+            _TPMAlgIdSequence().subtype(
+                implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 1)
+            ),
+        ),
     )
 
 
@@ -173,55 +190,34 @@ def encode_tpm20_quote_resp_info(
     return encode_to_der(value)
 
 
-def _decode_request_component(component: univ.SequenceOf) -> tuple[list[str] | None, list[int] | None]:
-    """Disambiguate one universal ``SEQUENCE OF`` reqInfo field by its inner tag."""
-    if not component.isValue or not len(component):
-        raise ValueError("TPM20QuoteReqInfo: optional sequence fields must not be empty")
-    first_value = component.getComponentByPosition(0)
-    if first_value.tagSet == _UTF8_TAG_SET:
-        return _validate_certificate_names(str(entry) for entry in component), None
-    if first_value.tagSet == _INTEGER_TAG_SET:
-        return None, _validate_hash_alg_ids(int(entry) for entry in component)
-    raise ValueError(f"TPM20QuoteReqInfo: unexpected inner tag {first_value.tagSet}")
+def decode_tpm20_quote_req_info_asn1(der: bytes | bytearray | univ.Any) -> TPM20QuoteReqInfoASN1:
+    """Decode ``TPM20QuoteReqInfo`` into a populated pyasn1 object (for display).
+
+    Plain schema-driven decode: the ``[0]``/``[1]`` IMPLICIT tags on
+    :class:`TPM20QuoteReqInfoASN1` disambiguate the two OPTIONAL fields, so no
+    manual inner-tag inspection is needed.
+    """
+    return try_decode_pyasn1(der, TPM20QuoteReqInfoASN1)
 
 
 def decode_tpm20_quote_req_info(
     der: bytes | bytearray | univ.Any,
 ) -> tuple[list[str] | None, list[int] | None]:
-    """Decode ``TPM20QuoteReqInfo`` into ``(certificate_names, supported_hash_algos)``.
-
-    The two OPTIONAL fields share the universal SEQUENCE tag, so this decodes
-    the outer SEQUENCE generically and disambiguates each component by its inner
-    element type (UTF8String vs INTEGER) — schema-driven decode cannot (X.680 §8).
-    """
-    value = try_decode_pyasn1(der, univ.Sequence)
-
-    names: list[str] | None = None
-    algos: list[int] | None = None
-    for index in range(len(value)):
-        component_names, component_algos = _decode_request_component(value.getComponentByPosition(index))
-        if component_names is not None:
-            if names is not None:
-                raise ValueError("TPM20QuoteReqInfo: duplicate certificateName sequence")
-            names = component_names
-        if component_algos is not None:
-            if algos is not None:
-                raise ValueError("TPM20QuoteReqInfo: duplicate supportedHashAlgo sequence")
-            algos = component_algos
-
+    """Decode ``TPM20QuoteReqInfo`` into ``(certificate_names, supported_hash_algos)``."""
+    value = decode_tpm20_quote_req_info_asn1(der)
+    names = (
+        _validate_certificate_names(str(entry) for entry in value["certificateName"])
+        if value["certificateName"].isValue
+        else None
+    )
+    algos = (
+        _validate_hash_alg_ids(int(entry) for entry in value["supportedHashAlgo"])
+        if value["supportedHashAlgo"].isValue
+        else None
+    )
     if names is None and algos is None:
         raise ValueError("TPM20QuoteReqInfo: at least one optional field must be present")
     return names, algos
-
-
-def decode_tpm20_quote_req_info_asn1(der: bytes | bytearray | univ.Any) -> TPM20QuoteReqInfoASN1:
-    """Decode ``TPM20QuoteReqInfo`` into a populated pyasn1 object (for display).
-
-    Same manual disambiguation as :func:`decode_tpm20_quote_req_info`, but rebuilds
-    a :class:`TPM20QuoteReqInfoASN1` so callers (the CMP CLI pretty-printer) can
-    ``prettyPrint()`` the named fields instead of the raw ANY payload.
-    """
-    return _build_req_info(*decode_tpm20_quote_req_info(der))
 
 
 def decode_tpm20_quote_resp_info(

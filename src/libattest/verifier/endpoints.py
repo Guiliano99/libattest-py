@@ -7,6 +7,8 @@
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from libattest.formats import media_types as _media_types
+
 DEFAULT_VERIFIER_HOST = "127.0.0.1"
 DEFAULT_VERIFICATION_PORT = 8080
 DEFAULT_PROVISIONING_PORT = 8888
@@ -21,9 +23,9 @@ SESSION_PATH_TEMPLATE = f"{VERIFICATION_BASE_PATH}/session/{{session_id}}"
 PROVISIONING_SUBMIT_PATH = f"{PROVISIONING_BASE_PATH}/submit"
 PROVISIONING_SESSION_PATH_TEMPLATE = f"{PROVISIONING_BASE_PATH}/session/{{session_id}}"
 
-SESSION_MEDIA_TYPE = "application/vnd.veraison.challenge-response-session+json"
-PROVISIONING_MEDIA_TYPE = "application/vnd.veraison.provisioning-session+json"
-CORIM_MEDIA_TYPE = "application/rim+cbor"
+SESSION_MEDIA_TYPE = _media_types.SESSION_MEDIA_TYPE
+PROVISIONING_MEDIA_TYPE = _media_types.PROVISIONING_MEDIA_TYPE
+CORIM_MEDIA_TYPE = _media_types.CORIM_MEDIA_TYPE
 
 
 @dataclass(frozen=True)

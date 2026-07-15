@@ -66,6 +66,7 @@ from libattest.formats.csrattest import (
     prepare_attestation_statement,
 )
 from libattest.formats.eat_ear import cwt_jwt_utils
+from libattest.formats.media_types import CMW_MEDIA_COSE, CMW_MEDIA_JOSE
 from libattest.stmt_log import log_statement
 
 # ── JOSE-HPKE evidence ───────────────────────────────────────────────────────────
@@ -77,7 +78,6 @@ EVIDENCE_ENC_OID = "1.3.6.1.4.1.99999.10"
 # NonceRequest/NonceResponse.type OID identifying the HPKE evidence-encryption key exchange.
 EVIDENCE_ENC_PARAMS_OID = "1.3.6.1.4.1.99999.11"
 
-CMW_MEDIA_JOSE = "application/jose"
 CMW_TYPE_JOSE = 4  # CMW type indicator for a JOSE message (draft-ietf-rats-msg-wrap)
 DEFAULT_KID = "eareat-hpke-verifier"
 
@@ -87,8 +87,6 @@ DEFAULT_KID = "eareat-hpke-verifier"
 # gencmpclient's ATG_COSE_HPKE_STMT_TYPE_OID.
 COSE_EVIDENCE_ENC_OID_ENV: str = "COSE_EVIDENCE_ENC_OID"
 COSE_EVIDENCE_ENC_OID = cwt_jwt_utils.COSE_HPKE_STMT_TYPE_OID  # "1.3.6.1.4.1.99999.20"
-
-CMW_MEDIA_COSE = "application/cose"
 
 
 def resolve_evidence_enc_oid() -> str:

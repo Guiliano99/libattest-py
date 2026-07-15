@@ -38,7 +38,8 @@ from dataclasses import dataclass, field
 
 import requests
 
-from libattest.formats.csrattest import NonceResponse, nonce_response_type_oid
+from libattest.attester.client import resolve_evidence_generation_inputs
+from libattest.formats.csrattest import NonceResponse
 from libattest.types import AttestResult
 from libattest.verifier.endpoints import (
     CORIM_MEDIA_TYPE,
@@ -380,9 +381,9 @@ class AttestClient:
         nonce_response:
             Decoded CMP attestation freshness `NonceResponse`.
         oid:
-            Optional evidence OID override.  Required when the CMP response
-            does not carry a `type` field and more than one provider is
-            registered.
+            Optional Evidence statement OID. Required when more than one
+            provider is registered because the CMP response type selects
+            ``respInfo`` syntax, not Evidence.
 
         Returns
         -------
@@ -397,18 +398,7 @@ class AttestClient:
             If no provider is registered for the selected OID.
 
         """
-        nonce = bytes(nonce_response["nonce"])
-        if not nonce:
-            raise ValueError("CMP NonceResponse contains an empty nonce")
-
-        selected_oid = oid
-        if selected_oid is None:
-            selected_oid = nonce_response_type_oid(nonce_response)
-        if selected_oid is None and len(self._providers) == 1:
-            selected_oid = next(iter(self._providers))
-        if selected_oid is None:
-            raise ValueError("oid is required when CMP NonceResponse has no type field")
-
+        selected_oid, nonce = resolve_evidence_generation_inputs(nonce_response, self._providers, oid)
         return self.generate_evidence(selected_oid, nonce)
 
     def generate_cmp_attestation_flow_result(

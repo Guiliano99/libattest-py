@@ -26,11 +26,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from pyasn1.type import univ
+
 from libattest.formats.csrattest import (
+    NonceResponse,
+    NonceResponseTypeInfo,
     decode_attestation_bundle,
     unwrap_attestation_statement,
 )
-from libattest.ra.nonce import NonceState, NonceStore, ReplayError
+from libattest.ra.nonce import BadNonceRequest, NonceState, NonceStore, ReplayError
 from libattest.ra.profile import AttestationProfile
 from libattest.ra.registry import ProfileRegistry
 from libattest.ra.verifier_client import VeraisonVerifierClient
@@ -59,6 +63,10 @@ class BundleVerifyOutcome:
 
     result: BundleVerifyResult
     ear_jwts: tuple[str | None, ...] = ()
+    profiles: ProfileRegistry | None = None
+    """The registry used to verify this bundle; resolves :attr:`first_ear_extension`.
+    ``None`` only for outcomes built without a registry (e.g. a bundle-decode
+    failure before any statement was routed)."""
 
     @property
     def accepted(self) -> bool:
@@ -76,6 +84,31 @@ class BundleVerifyOutcome:
         for jwt in self.ear_jwts:
             if jwt:
                 return jwt
+        return None
+
+    @property
+    def first_ear_extension(self) -> tuple[str, bytes] | None:
+        """Return ``(extn_oid_dot, extn_value_der)`` for the first affirming statement.
+
+        Resolves the affirming statement's profile (via ``result.routes``, the
+        statement-OID list parallel to ``ear_jwts``) and calls its
+        ``encode_ear_extension`` — the same per-type EAR/CMW choice the profile
+        was built with. Lets a carrier embed the certificate extension without
+        re-decoding the bundle or resolving the profile itself.
+
+        Returns ``None`` when nothing affirmed, or when the affirming
+        statement's profile no longer resolves (should not happen for a bundle
+        this engine itself just verified).
+        """
+        if self.profiles is None:
+            return None
+        for stmt_oid, jwt in zip(self.result.routes, self.ear_jwts):
+            if not jwt:
+                continue
+            profile = self.profiles.by_statement(stmt_oid)
+            if profile is None:
+                continue
+            return profile.encode_ear_extension(jwt)
         return None
 
 
@@ -101,6 +134,25 @@ class RemoteAttestationEngine:
         """Wire the engine to a profile registry and (optionally) a nonce store."""
         self.profiles = profiles
         self.nonce_store = nonce_store if nonce_store is not None else NonceStore()
+
+    @classmethod
+    def from_env(cls, nonce_store: NonceStore | None = None) -> RemoteAttestationEngine:
+        """Build an engine whose :class:`ProfileRegistry` is wired from env vars.
+
+        See :func:`libattest.ra.env.build_profile_registry_from_env` for the
+        full list of environment variables consumed. A fresh :class:`NonceStore`
+        is created when *nonce_store* is omitted.
+
+        Raises
+        ------
+        RuntimeError
+            No verifier routing is configured (see
+            :func:`~libattest.ra.env.build_profile_registry_from_env`).
+
+        """
+        from libattest.ra.env import build_profile_registry_from_env  # noqa: PLC0415
+
+        return cls(profiles=build_profile_registry_from_env(), nonce_store=nonce_store)
 
     # ── Phase 1: nonce issuance ────────────────────────────────────────────────
 
@@ -171,6 +223,82 @@ class RemoteAttestationEngine:
             statement_oid = str(request_type_oid) if request_type_oid else None
 
         return self.nonce_store.issue(tx_id, statement_oid, resp_info=resp_info, session_id=session_id)
+
+    def build_nonce_response(
+        self,
+        tx_id: bytes,
+        request_type_oid: str | None,
+        *,
+        req_info: bytes | None = None,
+        requested_len: int | None = None,
+        min_nonce_length: int | None = 32,
+        expiry_time: int | None = None,
+    ) -> NonceResponse:
+        """Validate the request, issue a nonce, and build a complete ``NonceResponse``.
+
+        Wraps :meth:`issue_nonce` with the wire-level concerns a carrier would
+        otherwise duplicate: minimum-length validation and packaging the result
+        as a ``NonceResponse`` ASN.1 value.
+
+        Critically, ``respTypeInfo.type`` is set to the resolved profile's
+        ``response_type_oid`` — **not** *request_type_oid* echoed back. Request
+        and response are distinct wire positions (see
+        :attr:`~libattest.ra.profile.AttestationProfile.response_type_oid`); a
+        profile whose response OID differs from its request OID (the TPM quote
+        profile) is packaged correctly without the carrier needing to know that.
+        When no profile resolves for *request_type_oid*, the response type falls
+        back to echoing the request type (unregistered-OID passthrough).
+
+        Parameters
+        ----------
+        tx_id:
+            Transaction identifier the nonce is filed under.
+        request_type_oid:
+            Dot-form ``NonceRequest.reqTypeInfo.type`` OID, or ``None``.
+        req_info:
+            Optional DER ``NonceRequest.reqTypeInfo.reqInfo``.
+        requested_len:
+            The client's requested nonce length (``NonceRequest.len``), or
+            ``None`` when omitted. Validated against *min_nonce_length* only —
+            the issued nonce's actual length is the store's configured size
+            (constant per deployment); this field does not resize it.
+        min_nonce_length:
+            Minimum acceptable *requested_len*. ``None`` skips the check.
+        expiry_time:
+            Optional ``NonceResponse.expiry`` value in seconds.
+
+        Returns
+        -------
+        NonceResponse
+            Ready to DER-encode into the carrier's reply.
+
+        Raises
+        ------
+        BadNonceRequest
+            *requested_len* is below *min_nonce_length*.
+
+        """
+        if requested_len is not None and min_nonce_length is not None and requested_len < min_nonce_length:
+            raise BadNonceRequest(
+                f"Requested nonce length {requested_len} is less than minimum length {min_nonce_length}."
+            )
+
+        state = self.issue_nonce(tx_id, request_type_oid, req_info=req_info)
+
+        profile = self.profiles.by_request_type(request_type_oid)
+        response_type_oid = profile.response_type_oid if profile is not None else request_type_oid
+
+        response = NonceResponse()
+        response["nonce"] = state.nonce
+        if expiry_time is not None:
+            response["expiry"] = expiry_time
+        if response_type_oid is not None:
+            resp_type_info = NonceResponseTypeInfo()
+            resp_type_info["type"] = univ.ObjectIdentifier(response_type_oid)
+            if state.resp_info is not None:
+                resp_type_info["respInfo"] = univ.Any(state.resp_info)
+            response["respTypeInfo"] = resp_type_info
+        return response
 
     # ── Phase 3: bundle verification ───────────────────────────────────────────
 
@@ -301,7 +429,7 @@ class RemoteAttestationEngine:
             ear_jwts.append(verdict.payload if (verdict.accepted and isinstance(verdict.payload, str)) else None)
 
         result = BundleVerifyResult(per_statement=tuple(verdicts), routes=tuple(route_oids))
-        return BundleVerifyOutcome(result=result, ear_jwts=tuple(ear_jwts))
+        return BundleVerifyOutcome(result=result, ear_jwts=tuple(ear_jwts), profiles=self.profiles)
 
     # ── Verifier submission ────────────────────────────────────────────────────
 

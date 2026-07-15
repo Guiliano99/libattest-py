@@ -25,6 +25,7 @@ from libattest.ra.engine import BundleVerifyOutcome, RemoteAttestationEngine
 from libattest.ra.nonce import (
     DEFAULT_NONCE_BYTES,
     DEFAULT_TTL_SECONDS,
+    BadNonceRequest,
     NonceState,
     NonceStore,
     ReplayError,
@@ -37,6 +38,7 @@ __all__ = [
     "DEFAULT_NONCE_BYTES",
     "DEFAULT_TTL_SECONDS",
     "AttestationProfile",
+    "BadNonceRequest",
     "BundleVerifyOutcome",
     "NonceState",
     "NonceStore",

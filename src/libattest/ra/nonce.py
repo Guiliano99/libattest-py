@@ -44,6 +44,16 @@ class ReplayError(Exception):
     """Raised when a ``(tx_id, oid, instance)`` slot is consumed a second time."""
 
 
+class BadNonceRequest(Exception):
+    """Raised when an incoming ``NonceRequest`` violates the freshness protocol.
+
+    Generic RA-protocol validation (e.g. a requested nonce length below the
+    configured minimum). Carriers map this to their own error type — the CMP
+    MockCA re-raises it as ``resources.exceptions.BadNonceRequest`` so the
+    outer CMP layer returns the correct PKIStatus.
+    """
+
+
 @dataclass
 class NonceState:
     """One RA-issued nonce with its lifecycle and routing metadata.
@@ -285,6 +295,7 @@ class NonceStore:
 __all__ = [
     "DEFAULT_NONCE_BYTES",
     "DEFAULT_TTL_SECONDS",
+    "BadNonceRequest",
     "NonceState",
     "NonceStore",
     "ReplayError",

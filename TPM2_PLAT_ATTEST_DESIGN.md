@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # TPM 2.0 Platform Attestation Design
 
 Design notes and current wire-shape for a CMP-carried TPM 2.0 platform
@@ -51,11 +56,11 @@ sequenceDiagram
 
     Note over C,CA: CMP provides end-to-end message protection
 
-    C->>CA: genm / NonceRequest<br/>type = TPM_PCR_SELECTION_OID<br/>reqInfo = DER(TpmAttestationParams)<br/>(typed ASN.1)
+    C->>CA: genm / NonceRequest<br/>type = id_tpm20_quote_req (1.2.3.4.5)<br/>reqInfo = DER(TPM20QuoteReqInfo)<br/>(typed ASN.1)
 
     CA->>CA: Select PCRs and hashAlgId by policy<br/>Generate nonce<br/>Store transactionID -> nonce, pcrs, hashAlgId, expiry, used=false
 
-    CA-->>C: genp / NonceResponse<br/>nonce = fresh challenge<br/>type = TPM_PCR_SELECTION_OID<br/>respInfo = DER(TpmAttestationParams)<br/>(typed ASN.1)
+    CA-->>C: genp / NonceResponse<br/>nonce = fresh challenge<br/>type = id_tpm20_quote_res (1.2.3.4.6)<br/>respInfo = DER(TPM20QuoteRespInfo)<br/>(typed ASN.1)
 
     C->>TPM: TPM2_Quote<br/>AK handle, PCR selection,<br/>qualifyingData = nonce
     TPM-->>C: TPMS_ATTEST + TPMT_SIGNATURE
@@ -139,17 +144,13 @@ NonceResponse ::= SEQUENCE {
 }
 ```
 
-For this TPM platform profile, the type-specific request/response value is the
-typed ASN.1 structure `TpmAttestationParams`. The freshness draft delegates the
-reqInfo/respInfo encoding to the profile that defines the type OID; this
-profile prefers typed ASN.1 because the OpenSSL-based client consumes it with
-macro-generated `d2i_`/`i2d_` codecs and the PCR integers feed the TPM's
-`TPML_PCR_SELECTION` directly (OpenSSL has no public JSON parser). The current
-repository default OID is private and configurable:
+For this TPM platform profile, the request and response use distinct typed
+ASN.1 structures and distinct example OIDs owned by
+`libattest.formats.tpm.quote_profile`:
 
 ```text
-TPM_PCR_SELECTION_OID_DEFAULT = 1.3.6.1.4.1.99999.3
-TPM_PCR_SELECTION_OID_ENV     = TPM_PCR_SELECTION_OID
+id_tpm20_quote_req = 1.2.3.4.5
+id_tpm20_quote_res = 1.2.3.4.6
 ```
 
 A typical platform nonce exchange is:
@@ -157,9 +158,11 @@ A typical platform nonce exchange is:
 ```text
 genm / NonceRequest:
   len     = 32
-  type    = TPM_PCR_SELECTION_OID
-  reqInfo = DER(TpmAttestationParams { hashAlgId: 0x000B })
-            -- 30 03 02 01 0B (client proposes only the hash bank)
+  type    = id_tpm20_quote_req (1.2.3.4.5)
+  reqInfo = DER(TPM20QuoteReqInfo {
+               certificateName: ["ak"],
+               supportedHashAlgo: [0x000B]
+             })
 
 CA/RA pending state:
   transactionID -> nonce, pcrs, hashAlgId, expiry, used=false
@@ -167,10 +170,10 @@ CA/RA pending state:
 genp / NonceResponse:
   nonce    = caNonce
   expiry   = validity period in seconds
-  type     = TPM_PCR_SELECTION_OID
-  respInfo = DER(TpmAttestationParams {
-               pcrs: [0, 1, 2, 3, 4],
-               hashAlgId: 0x000B
+  type     = id_tpm20_quote_res (1.2.3.4.6)
+  respInfo = DER(TPM20QuoteRespInfo {
+               pcrSelection: [0, 1, 2, 3, 4],
+               hashAlgo: 0x000B
              })
 ```
 
@@ -178,64 +181,44 @@ The `nonce` field is the actual freshness challenge used as
 `TPM2_Quote.qualifyingData`. TPM quote parameters are not overloaded into
 `nonce`; they are carried in `reqInfo` and `respInfo`.
 
-## TPM quote parameter structure
+## TPM quote parameter structures
 
-`TpmAttestationParams` is the repository's profile-specific open-type value for
-selecting TPM quote parameters. It is carried in `NonceRequest.reqInfo` or
-`NonceResponse.respInfo`:
+The request and response OIDs select different open-type structures:
 
 ```asn1
-TpmAttestationParams ::= SEQUENCE {
-    pcrs       SEQUENCE OF INTEGER OPTIONAL,
-    -- PCR indices to quote (0..23 per bank)
-    hashAlgId  INTEGER OPTIONAL
-    -- TPM_ALG_ID of the PCR bank, e.g. 0x000B for SHA-256
+TPM20QuoteReqInfo ::= SEQUENCE {
+    certificateName   SEQUENCE OF UTF8String OPTIONAL,
+    supportedHashAlgo SEQUENCE OF INTEGER OPTIONAL
+}
+
+TPM20QuoteRespInfo ::= SEQUENCE {
+    certificateName UTF8String OPTIONAL,
+    pcrSelection    SEQUENCE OF INTEGER,
+    hashAlgo        INTEGER
 }
 ```
 
-This shape is implemented identically on both sides of the exchange:
-
-- C client/server: `LOCAL_TPM_ATTESTATION_PARAMS` in
-  `gencmpclient/src/rats_csr_asn.c` (OpenSSL `ASN1_SEQUENCE` macros generate
-  the `d2i_`/`i2d_` codecs; `ASN1_INTEGER_get()` yields the PCR indices that
-  feed the `TPML_PCR_SELECTION` bitmask for `TPM2_Quote`).
-- Python: `libattest.formats.tpm.attestation_params`
-  (`encode_tpm_attestation_params` / `decode_tpm_attestation_params`).
+The Python implementation and DER codecs live in
+`libattest.formats.tpm.quote_profile`.
 
 Use in the two directions:
 
 ```text
 Client -> CA/RA (propose only the hash bank):
-  reqInfo = DER(TpmAttestationParams { hashAlgId: 0x000B })
+  reqInfo = DER(TPM20QuoteReqInfo { supportedHashAlgo: [0x000B] })
 
 CA/RA -> Client (select PCRs and hash by policy):
-  respInfo = DER(TpmAttestationParams { pcrs: [0,1,2,3,4],
-                                        hashAlgId: 0x000B })
+  respInfo = DER(TPM20QuoteRespInfo { pcrSelection: [0,1,2,3,4],
+                                      hashAlgo: 0x000B })
 ```
 
 The client MUST apply `respInfo` when invoking `TPM2_Quote`. If `respInfo` is
 absent, PCR selection and hash algorithm are local policy / profile decisions;
 that mode is less explicit and is not preferred for interoperable testing.
 
-### Alternative JSON encoding
-
-The freshness draft explicitly permits mixed encodings ("an ASN.1 message can
-contain reqInfo or respInfo encoded as JSON, if necessary"). For deployments
-where the consuming side has a JSON parser readily available,
-`libattest.formats.tpm.pcr_selection` retains the alternative OID + UTF8String
-JSON wrapper:
-
-```asn1
-TpmPcrSelectionInfo ::= SEQUENCE {
-    type    OBJECT IDENTIFIER,  -- identifies the JSON schema in value
-    value   UTF8String          -- e.g. {"pcrSelection":[{"hash":"sha256",
-                                --        "pcrs":[0,1,2,3,4]}]}
-}
-```
-
-The typed `TpmAttestationParams` form is the default for this profile because
-the C client would otherwise need a JSON parser (OpenSSL provides none) and
-because the integer PCR values parse directly into the TPM selection bitmask.
+The typed request and response forms are used because the C client would
+otherwise need a JSON parser (OpenSSL provides none) and because the integer
+PCR values parse directly into the TPM selection bitmask.
 
 A RATS Conceptual Message Wrapper (CMW, draft-ietf-rats-msg-wrap) is *not*
 used for reqInfo/respInfo: quote-parameter negotiation is not a RATS
@@ -320,7 +303,7 @@ TPM2_Quote(
     signHandle       = AK,
     qualifyingData   = NonceResponse.nonce,
     inScheme         = AK-compatible signing scheme,
-    PCRselect        = pcrs / hashAlgId from TpmAttestationParams
+    PCRselect        = pcrSelection / hashAlgo from TPM20QuoteRespInfo
 ) -> quoted: TPMS_ATTEST, signature: TPMT_SIGNATURE
 ```
 
