@@ -9,6 +9,7 @@ from libattest.formats.tpm.pcr_selection import (
     resolve_tpm_pcr_selection_oid,
 )
 from libattest.formats.tpm.quote_profile import (
+    DEFAULT_TPM20_QUOTE_CERTIFICATE_NAMES,
     PCRIndex,
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
@@ -104,6 +105,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "DEFAULT_TPM20_QUOTE_CERTIFICATE_NAMES",
     "TPM_ALG_ECDSA",
     "TPM_ALG_RSAPSS",
     "TPM_ALG_RSASSA",

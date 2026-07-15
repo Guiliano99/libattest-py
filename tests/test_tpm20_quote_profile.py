@@ -35,6 +35,15 @@ def test_quote_request_info_round_trips_certificate_names_and_hash_algorithms() 
     assert supported_hash_algos == [TPM_ALG_SHA1, TPM_ALG_SHA256]
 
 
+def test_quote_request_info_defaults_to_all_demo_certificate_names() -> None:
+    der = encode_tpm20_quote_req_info(supported_hash_algos=[TPM_ALG_SHA256])
+
+    certificate_names, supported_hash_algos = decode_tpm20_quote_req_info(der)
+
+    assert certificate_names == ["ak", "ak-2", "ak-3"]
+    assert supported_hash_algos == [TPM_ALG_SHA256]
+
+
 def test_quote_response_info_round_trips_single_pcr_bank_selection() -> None:
     der = encode_tpm20_quote_resp_info(
         certificate_name="ak-a",
@@ -55,8 +64,17 @@ def test_quote_info_helpers_return_any_payloads() -> None:
 
     assert isinstance(req_info, univ.Any)
     assert isinstance(resp_info, univ.Any)
-    assert decode_tpm20_quote_req_info(req_info) == (None, [TPM_ALG_SHA256])
+    assert decode_tpm20_quote_req_info(req_info) == (["ak", "ak-2", "ak-3"], [TPM_ALG_SHA256])
     assert decode_tpm20_quote_resp_info(resp_info) == (None, [0, 1, 2, 3], TPM_ALG_SHA256)
+
+
+def test_quote_request_info_can_explicitly_omit_certificate_names() -> None:
+    der = encode_tpm20_quote_req_info(
+        certificate_names=None,
+        supported_hash_algos=[TPM_ALG_SHA256],
+    )
+
+    assert decode_tpm20_quote_req_info(der) == (None, [TPM_ALG_SHA256])
 
 
 def test_quote_profile_exports_placeholder_type_oids() -> None:

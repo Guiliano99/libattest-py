@@ -28,17 +28,17 @@ from libattest.formats.tpm.quote_profile import (
 # have distinct inner element types (UTF8String vs INTEGER); a message
 # carrying both (the shape every demo sends) decodes unambiguously. See
 # docs/adr/0003-asn1-utils-and-strict-der-decoding.md (revert note).
-REQ_GOLDEN = bytes.fromhex("300b30040c02616b300302010b")
+REQ_GOLDEN = bytes.fromhex("301730100c02616b0c04616b2d320c04616b2d33300302010b")
 # Emitted by the gencmpclient C smoke (scratchpad/g2build), untagged SEQUENCE OF.
 RESP_GOLDEN = bytes.fromhex("30180c02616b300f02010002010102010202010302010402010b")
 
 SHA256 = 11  # TPM_ALG_SHA256
 
 
-def test_req_info_matches_c_golden_der() -> None:
-    der = encode_tpm20_quote_req_info(certificate_names=["ak"], supported_hash_algos=[SHA256])
+def test_default_req_info_matches_c_golden_der() -> None:
+    der = encode_tpm20_quote_req_info(supported_hash_algos=[SHA256])
     assert der == REQ_GOLDEN
-    assert decode_tpm20_quote_req_info(der) == (["ak"], [SHA256])
+    assert decode_tpm20_quote_req_info(der) == (["ak", "ak-2", "ak-3"], [SHA256])
 
 
 def test_resp_info_matches_c_golden_der() -> None:

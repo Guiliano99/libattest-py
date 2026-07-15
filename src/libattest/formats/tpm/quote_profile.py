@@ -16,6 +16,7 @@ id_tpm20_quote_res = univ.ObjectIdentifier("1.2.3.4.6")
 
 _PCR_INDEX_MAX = 23  # Hardware TPMs expose 24 PCRs per bank (indices 0..23)
 _TPM_ALG_ID_MAX = 0xFFFF
+DEFAULT_TPM20_QUOTE_CERTIFICATE_NAMES = ("ak", "ak-2", "ak-3")
 
 # TPM20QuoteReqInfo's two OPTIONAL fields share the universal SEQUENCE tag, so
 # schema-driven decode cannot tell them apart (X.680 §8). They are disambiguated
@@ -143,10 +144,14 @@ def _build_req_info(names: list[str] | None, algos: list[int] | None) -> TPM20Qu
 
 def encode_tpm20_quote_req_info(
     *,
-    certificate_names: Iterable[str] | None = None,
+    certificate_names: Iterable[str] | None = DEFAULT_TPM20_QUOTE_CERTIFICATE_NAMES,
     supported_hash_algos: Iterable[int] | None = None,
 ) -> bytes:
-    """DER-encode ``TPM20QuoteReqInfo``."""
+    """DER-encode ``TPM20QuoteReqInfo``.
+
+    Omitting ``certificate_names`` emits the demo's three candidate labels.
+    Pass ``None`` explicitly to omit the optional ``certificateName`` field.
+    """
     names = _validate_certificate_names(certificate_names)
     algos = _validate_hash_alg_ids(supported_hash_algos)
     return encode_to_der(_build_req_info(names, algos))
@@ -238,10 +243,14 @@ def decode_tpm20_quote_resp_info(
 
 def tpm20_quote_request_info(
     *,
-    certificate_names: Iterable[str] | None = None,
+    certificate_names: Iterable[str] | None = DEFAULT_TPM20_QUOTE_CERTIFICATE_NAMES,
     supported_hash_algos: Iterable[int] | None = None,
 ) -> univ.Any:
-    """Build a ``NonceRequestTypeInfo.reqInfo`` ANY value."""
+    """Build a ``NonceRequestTypeInfo.reqInfo`` ANY value.
+
+    Omitting ``certificate_names`` emits the demo's three candidate labels.
+    Pass ``None`` explicitly to omit the optional ``certificateName`` field.
+    """
     return univ.Any(
         hexValue=encode_tpm20_quote_req_info(
             certificate_names=certificate_names,
@@ -276,6 +285,7 @@ def tpm20_quote_resp_info_from_response_info(
 
 
 __all__ = [
+    "DEFAULT_TPM20_QUOTE_CERTIFICATE_NAMES",
     "PCRIndex",
     "TPM20QuoteReqInfoASN1",
     "TPM20QuoteRespInfoASN1",

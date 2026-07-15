@@ -72,3 +72,10 @@ three wire positions: `AttestationStatement.stmt` (carries Evidence),
 `NonceRequestTypeInfo.reqInfo`, and `NonceResponseTypeInfo.respInfo` (both
 CMP nonce-freshness handshake payloads, exchanged before Evidence exists).
 `_Avoid_`: payload, blob
+
+**certificate-name label**:
+A UTF8String label an Attester places in a TPM quote nonce request to identify
+candidate attestation certificates. It is distinct from a TPM object's
+cryptographic Name and from a persistent TPM handle; it does not create or
+select an Attestation Key.
+_Avoid_: TPM Name, AK handle
