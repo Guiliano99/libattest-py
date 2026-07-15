@@ -17,7 +17,7 @@ from pyasn1.codec.der import decoder as der_decoder
 from pyasn1.codec.der import encoder as der_encoder
 from pyasn1.type import univ
 
-from libattest import get_oid_by_name
+from libattest import get_nonce_request_oid_for_name, get_nonce_response_oid_for_name, get_oid_by_name
 from libattest.formats.csrattest import (
     AttestationStatement,
     decode_attestation_bundle,
@@ -118,9 +118,10 @@ def test_prepare_multi_statement_bundle_honors_is_asn1_evidence():
 # ── EAR-extension encoders ───────────────────────────────────────────────────────
 
 
-def test_encode_ear_extension_raw_oid():
-    oid, value = encode_ear_extension("a.b.c", oid="1.7.6.5.123")
-    assert oid == "1.7.6.5.123"
+def test_encode_ear_extension_demo_oid():
+    """GIVEN the named demo OID WHEN encoding an EAR THEN the raw JWT representation is used."""
+    oid, value = encode_ear_extension("a.b.c", oid=get_oid_by_name("demo-ear-extension"))
+    assert oid == get_oid_by_name("demo-ear-extension")
     assert value == b"a.b.c"
 
 
@@ -175,9 +176,10 @@ def test_decode_tcg_attest_certify_round_trip():
 
 def test_make_pcr_selection_resp_info_round_trips_via_registry():
     der = bytes(tpm_formats.tpm20_quote_response_info(pcr_selection=[0, 1, 2, 3, 4], hash_algo=0x000B))
-    as_json = respinfo.DEFAULT_RESP_INFO_REGISTRY.to_json("2.23.133.20.2", der)
+    response_oid = get_nonce_response_oid_for_name("tpm-quote")
+    as_json = respinfo.DEFAULT_RESP_INFO_REGISTRY.to_json(response_oid, der)
     assert as_json == {"pcrSelection": [0, 1, 2, 3, 4], "hashAlgo": 11}
-    back = respinfo.DEFAULT_RESP_INFO_REGISTRY.from_json("2.23.133.20.2", as_json)
+    back = respinfo.DEFAULT_RESP_INFO_REGISTRY.from_json(response_oid, as_json)
     assert bytes(back) == der
 
 
@@ -204,16 +206,15 @@ def test_tpm_profile_engine_forwards_resp_info_json():
 
     class CapturingClient(VeraisonVerifierClient):
         def submit_evidence(self, nonce, evidence, evidence_oid=None, resp_info_json=None):
-            captured.update(
-                nonce=nonce, evidence=evidence, oid=evidence_oid, resp_info_json=resp_info_json
-            )
+            captured.update(nonce=nonce, evidence=evidence, oid=evidence_oid, resp_info_json=resp_info_json)
             return "tpm.ear.jwt"
 
-    quote_oid = "2.23.133.20.2"
+    request_oid = get_nonce_request_oid_for_name("tpm-quote")
+    quote_oid = get_oid_by_name("tcg-attest-quote")
     profiles = ProfileRegistry()
     profiles.register(
         tpm_profile(
-            request_type_oid="1.3.6.1.4.1.99999.5",  # PCR-selection syntax OID
+            request_type_oid=request_oid,
             statement_oid=quote_oid,
             verifier=CapturingClient(base_url="http://verifier.invalid"),
             pcrs=[0, 1, 2, 3, 4],
@@ -223,10 +224,12 @@ def test_tpm_profile_engine_forwards_resp_info_json():
 
     tx = b"\x0b" * 16
     req_info = tpm_formats.encode_tpm20_quote_req_info(supported_hash_algos=[0x000B])
-    state = engine.issue_nonce(tx, "1.3.6.1.4.1.99999.5", req_info=req_info)
+    state = engine.issue_nonce(tx, request_oid, req_info=req_info)
     assert state.resp_info is not None  # the quote leg broadcasts a respInfo
 
-    quote_stmt = prepare_asn1_attestation_statement(quote_oid, bytes(der_encoder.encode(univ.Sequence())))
+    quote_stmt = prepare_asn1_attestation_statement(
+        univ.ObjectIdentifier(quote_oid), bytes(der_encoder.encode(univ.Sequence()))
+    )
     bundle = bytes(der_encoder.encode(prepare_attestation_bundle([quote_stmt])))
     outcome = engine.verify_bundle(bundle, tx)
 

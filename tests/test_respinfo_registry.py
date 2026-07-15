@@ -23,6 +23,14 @@ def test_default_registry_round_trips_key_attest_response() -> None:
     assert DEFAULT_RESP_INFO_REGISTRY.to_json(oid, der) == payload
 
 
+def test_default_registry_uses_tpm_quote_response_oid() -> None:
+    """GIVEN the TPM quote response OID WHEN routed THEN its ``respInfo`` codec is registered."""
+    oid = get_nonce_response_oid_for_name("tpm-quote")
+
+    assert DEFAULT_RESP_INFO_REGISTRY.is_registered(oid)
+    assert oid in NONCE_RESPONSE_STATEMENT_STRUCTURES
+
+
 def test_every_registered_resp_info_oid_has_a_response_structure() -> None:
     """GIVEN every OID with a respInfo JSON codec THEN it also has an ASN.1 decode structure.
 

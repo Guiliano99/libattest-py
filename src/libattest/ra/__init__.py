@@ -29,24 +29,13 @@ from libattest.ra.nonce import (
     NonceStore,
     ReplayError,
 )
-from libattest.ra.profile import (
-    DEFAULT_EAR_EXT_OID,
-    ID_TCG_ATTEST_CERTIFY,
-    ID_TCG_ATTEST_QUOTE,
-    AttestationProfile,
-    jwt_profile,
-    key_attest_profile,
-    tpm_profile,
-)
+from libattest.ra.profile import AttestationProfile, jwt_profile, key_attest_profile, tpm_profile
 from libattest.ra.registry import ProfileRegistry, ServiceRegistry
 from libattest.ra.verifier_client import VeraisonVerifierClient
 
 __all__ = [
-    "DEFAULT_EAR_EXT_OID",
     "DEFAULT_NONCE_BYTES",
     "DEFAULT_TTL_SECONDS",
-    "ID_TCG_ATTEST_CERTIFY",
-    "ID_TCG_ATTEST_QUOTE",
     "AttestationProfile",
     "BundleVerifyOutcome",
     "NonceState",

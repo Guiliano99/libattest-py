@@ -13,6 +13,8 @@ from __future__ import annotations
 import pytest
 from pyasn1.codec.der import encoder as der_encoder
 
+import libattest.ra as ra_package
+from libattest import get_oid_for_stmt_name
 from libattest.formats.csrattest import (
     prepare_attestation_bundle,
     prepare_opaque_attestation_statement,
@@ -29,7 +31,7 @@ from libattest.testing.fakes import InMemoryVerifier
 from libattest.types import EarStatus, VerifyResult
 
 OID = "1.3.6.1.4.1.99999.1"
-KEY_ATTEST_OID = "1.3.6.1.4.1.99999.2"
+KEY_ATTEST_OID = get_oid_for_stmt_name("key-attest")
 TX = b"\x01" * 16
 
 
@@ -47,6 +49,13 @@ def _engine(verifier) -> RemoteAttestationEngine:
 
 
 # ── happy path ─────────────────────────────────────────────────────────────────
+
+
+def test_ra_package_does_not_reexport_raw_oid_constants() -> None:
+    """GIVEN the RA package WHEN inspected THEN project OIDs are available only through accessors."""
+    assert not hasattr(ra_package, "DEFAULT_EAR_EXT_OID")
+    assert not hasattr(ra_package, "ID_TCG_ATTEST_CERTIFY")
+    assert not hasattr(ra_package, "ID_TCG_ATTEST_QUOTE")
 
 
 def test_issue_then_verify_bundle_affirming():
@@ -137,7 +146,7 @@ def test_verify_bundle_unknown_for_unregistered_statement_oid():
     verifier = InMemoryVerifier(result=VerifyResult.affirming("ear"))
     engine = _engine(verifier)
 
-    other = "1.3.6.1.4.1.99999.2"
+    other = KEY_ATTEST_OID
     # Issue under the unknown OID so the nonce consume succeeds, then the
     # missing profile yields 'unknown' (not a nonce error).
     engine.nonce_store.issue(TX, other)

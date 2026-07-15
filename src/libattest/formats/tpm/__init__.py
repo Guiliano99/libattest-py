@@ -3,11 +3,6 @@
 
 """TPM attestation formats."""
 
-from libattest.formats.tpm.pcr_selection import (
-    TPM_PCR_SELECTION_OID_DEFAULT,
-    TPM_PCR_SELECTION_OID_ENV,
-    resolve_tpm_pcr_selection_oid,
-)
 from libattest.formats.tpm.quote_profile import (
     PCRIndex,
     TPM20QuoteReqInfoASN1,
@@ -34,8 +29,8 @@ from libattest.formats.tpm.tcg import (
 
 # ``tpms_attest`` is the only TPM-format module that hard-depends on the native
 # ``tpm2-pytss`` binding (it sources the TCG algorithm ids and the ``TPMS_ATTEST``
-# unmarshaller from it).  The pyasn1-only codecs above (pcr_selection /
-# quote_profile / tcg) carry the nonce-negotiation + respInfo helpers the MockCA
+# unmarshaller from it).  The pyasn1-only codecs above (quote_profile / tcg)
+# carry the nonce-negotiation + respInfo helpers the MockCA
 # needs, and the MockCA image deliberately does NOT install ``tpm2-pytss``.
 #
 # Re-exporting ``tpms_attest`` eagerly here would therefore make *importing*
@@ -114,8 +109,6 @@ __all__ = [
     "TPM_GENERATED_VALUE",
     "TPM20QuoteReqInfoASN1",
     "TPM20QuoteRespInfoASN1",
-    "TPM_PCR_SELECTION_OID_DEFAULT",
-    "TPM_PCR_SELECTION_OID_ENV",
     "TPM_ST_ATTEST_QUOTE",
     "TPMAlgId",
     "PCRIndex",
@@ -140,7 +133,6 @@ __all__ = [
     "pcr_indices_to_mask",
     "pcr_mask_to_indices",
     "prepare_tcg_attest_certify",
-    "resolve_tpm_pcr_selection_oid",
     "tpm20_quote_request_info",
     "tpm20_quote_resp_info_from_response_info",
     "tpm20_quote_response_info",

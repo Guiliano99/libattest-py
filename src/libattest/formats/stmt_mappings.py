@@ -22,6 +22,7 @@ from pyasn1_alt_modules import rfc5280
 
 from libattest.asn1_utils import try_decode_pyasn1
 from libattest.formats.cmw import CMW, ID_PE_CMW
+from libattest.formats.ear_extension import DEMO_EAR_EXTENSION_OID
 from libattest.formats.eareat_hpke import (
     EVIDENCE_ENC_PARAMS_OID,
     resolve_cose_evidence_enc_oid,
@@ -37,9 +38,9 @@ from libattest.formats.tpm import (
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
     decode_tpm20_quote_req_info_asn1,
+    id_tpm20_quote_req,
     id_tpm20_quote_res,
 )
-from libattest.formats.tpm.pcr_selection import resolve_tpm_pcr_selection_oid
 from libattest.formats.tpm.tcg import id_tcg_attest_certify, id_tcg_attest_quote
 
 StatementValue: TypeAlias = bytes
@@ -47,14 +48,12 @@ StatementDecoder: TypeAlias = Callable[[StatementValue], object]
 StatementStructure: TypeAlias = type[base.Asn1Item]
 
 NONCE_REQUEST_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
-    resolve_tpm_pcr_selection_oid(): TPM20QuoteReqInfoASN1,
+    str(id_tpm20_quote_req): TPM20QuoteReqInfoASN1,
     resolve_key_attest_evidence_oid(): KeyAttestChall,
 }
 
 NONCE_RESPONSE_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
-    resolve_tpm_pcr_selection_oid(): TPM20QuoteRespInfoASN1,
     str(id_tpm20_quote_res): TPM20QuoteRespInfoASN1,
-    str(id_tcg_attest_quote): TPM20QuoteRespInfoASN1,
     resolve_key_attest_evidence_oid(): KeyAttestResp,
     EVIDENCE_ENC_PARAMS_OID: rfc5280.SubjectPublicKeyInfo,
 }
@@ -64,7 +63,6 @@ ATTESTATION_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     resolve_evidence_enc_oid(): univ.OctetString,
     resolve_cose_evidence_enc_oid(): CMW,
     str(ID_PE_CMW): CMW,
-    ID_PE_CMW: CMW,
 }
 
 
@@ -127,20 +125,27 @@ _STMT_OID_BY_NAME: dict[str, str] = {
     "key-attest": resolve_key_attest_evidence_oid(),
     "jose-hpke-evidence": resolve_evidence_enc_oid(),
     "cose-hpke-evidence": resolve_cose_evidence_enc_oid(),
+    "tcg-attest-quote": str(id_tcg_attest_quote),
 }
 
 _NONCE_REQUEST_OID_BY_NAME: dict[str, str] = {
-    "tpm-quote": resolve_tpm_pcr_selection_oid(),
+    "tpm-quote": str(id_tpm20_quote_req),
+    "tpm-quote-request": str(id_tpm20_quote_req),
     "key-attest": resolve_key_attest_evidence_oid(),
     "jose-hpke-evidence-params": EVIDENCE_ENC_PARAMS_OID,
 }
 
 _NONCE_RESPONSE_OID_BY_NAME: dict[str, str] = {
-    "tpm-quote": resolve_tpm_pcr_selection_oid(),
+    "tpm-quote": str(id_tpm20_quote_res),
+    "tpm-quote-response": str(id_tpm20_quote_res),
     "tpm-quote-result": str(id_tpm20_quote_res),
-    "tcg-attest-quote": str(id_tcg_attest_quote),
     "key-attest": resolve_key_attest_evidence_oid(),
     "jose-hpke-evidence-params": EVIDENCE_ENC_PARAMS_OID,
+}
+
+_EXTENSION_OID_BY_NAME: dict[str, str] = {
+    # Deployment default for the legacy raw-EAR-JWT certificate extension.
+    "demo-ear-extension": DEMO_EAR_EXTENSION_OID,
 }
 
 
@@ -157,11 +162,14 @@ def _merge_oid_names(*registries: dict[str, str]) -> dict[str, str]:
 
 
 # Every named OID known to this project: the statement + nonce positions plus the
-# stand-alone TPM evidence OIDs.
+# stand-alone TPM evidence OIDs. ``tpm-quote`` is intentionally position-scoped:
+# its request and response values differ, so the unscoped registry exposes the
+# explicit ``tpm-quote-request`` and ``tpm-quote-response`` names instead.
 _OID_BY_NAME: dict[str, str] = _merge_oid_names(
     _STMT_OID_BY_NAME,
-    _NONCE_REQUEST_OID_BY_NAME,
-    _NONCE_RESPONSE_OID_BY_NAME,
+    {name: oid for name, oid in _NONCE_REQUEST_OID_BY_NAME.items() if name != "tpm-quote"},
+    {name: oid for name, oid in _NONCE_RESPONSE_OID_BY_NAME.items() if name != "tpm-quote"},
+    _EXTENSION_OID_BY_NAME,
     {"tcg-attest-certify": str(id_tcg_attest_certify)},
 )
 
@@ -192,9 +200,14 @@ def get_nonce_response_oid_for_name(name: str) -> str:
 def get_oid_by_name(name: str) -> str:
     """Return the dot-decimal OID for any name known to this project (see the README).
 
-    The union of every named OID across all statement/nonce positions plus the stand-alone
-    TPM evidence OIDs — the single blessed entry point for referencing a project OID.
+    The union of every *unambiguous* named OID across all statement/nonce positions plus
+    the stand-alone TPM evidence OIDs. Use the position-scoped accessors for
+    ``"tpm-quote"``, whose request and response OIDs intentionally differ.
     """
+    if name == "tpm-quote":
+        raise ValueError(
+            "ambiguous OID name 'tpm-quote'; use get_nonce_request_oid_for_name() or get_nonce_response_oid_for_name()"
+        )
     return _lookup_oid(_OID_BY_NAME, name, "OID")
 
 

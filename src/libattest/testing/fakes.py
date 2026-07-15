@@ -11,12 +11,13 @@ Example:
 -------
 ::
 
+    from libattest import get_oid_by_name
     from libattest.testing.fakes import InMemoryVerifier, EchoAttesterProvider
     from libattest.verifier.router import VerifierRouter
     from libattest.attester.client import AttesterClient
     from libattest.types import EarStatus
 
-    oid = "2.23.133.20.1"
+    oid = get_oid_by_name("tcg-attest-certify")
     verifier = InMemoryVerifier()
     router = VerifierRouter()
     router.register("tpm", verifier, evidence_types=[oid], default=True)

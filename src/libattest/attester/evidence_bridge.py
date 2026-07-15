@@ -37,10 +37,10 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from libattest import get_oid_by_name, get_oid_for_stmt_name
 from libattest.attester.tpm_client import TpmClient
 from libattest.formats.eareat_hpke import generate_cwt_evidence
 from libattest.formats.eat_ear.cwt_jwt_utils import (
-    COSE_HPKE_STMT_TYPE_OID,
     open_cose_hpke_evidence,
     seal_cose_hpke_evidence,
 )
@@ -49,13 +49,8 @@ from libattest.formats.key_attest_pop import (
     encode_to_der,
     prepare_key_attest_chall,
     prepare_key_attest_evidence,
-    resolve_key_attest_evidence_oid,
 )
-from libattest.formats.tpm.tcg import (
-    id_tcg_attest_certify,
-    id_tcg_attest_quote,
-    prepare_tcg_attest_certify,
-)
+from libattest.formats.tpm.tcg import prepare_tcg_attest_certify
 from libattest.stmt_log import log_statement
 
 _KINDS = ("quote", "certify", "key-attest")
@@ -151,13 +146,13 @@ def generate_tpm_evidence(
             quote_kwargs = {"pcr_selection": pcr_selection} if pcr_selection else {}
             result = tpm.quote(nonce, include_pcr_values=True, **quote_kwargs)
             third_field = result.pcr_values or None
-            type_oid = id_tcg_attest_quote
+            type_oid = get_oid_by_name("tcg-attest-quote")
         else:
             if subject_key_pem is None:
                 raise ValueError("kind='certify' requires subject_key_pem")
             result = tpm.certify(subject_key_pem, nonce)
             third_field = result.tpmt_public
-            type_oid = id_tcg_attest_certify
+            type_oid = get_oid_by_name("tcg-attest-certify")
 
     signature_wire_bytes = result.signature_wire_bytes
     if corrupt_signature:
@@ -168,8 +163,8 @@ def generate_tpm_evidence(
         signature=signature_wire_bytes,
         tpm_tpublic=third_field,
     )
-    log_statement("TcgAttestCertify", statement, str(type_oid))
-    return encode_to_der(statement), str(type_oid)
+    log_statement("TcgAttestCertify", statement, type_oid)
+    return encode_to_der(statement), type_oid
 
 
 # pylint: enable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -207,7 +202,7 @@ def _generate_key_attest_evidence(
         tpm_tpublic=result.tpmt_public,
         key_attest_signature=pop_signature,
     )
-    evidence_oid = resolve_key_attest_evidence_oid()
+    evidence_oid = get_oid_for_stmt_name("key-attest")
     log_statement("KeyAttestEvidence", evidence, evidence_oid)
     return encode_to_der(evidence), evidence_oid
 
@@ -270,7 +265,6 @@ def generate_key_attest_evidence(
 
 # pylint: enable=too-many-arguments,too-many-positional-arguments
 __all__ = [
-    "COSE_HPKE_STMT_TYPE_OID",
     "build_key_attest_chall",
     "generate_cwt_evidence",
     "generate_key_attest_evidence",

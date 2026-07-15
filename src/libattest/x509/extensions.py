@@ -60,8 +60,9 @@ import logging
 import warnings
 from typing import Optional, Union
 
+from libattest import get_oid_by_name
 from libattest.asn1_utils import try_decode_pyasn1
-from libattest.formats.cmw import CMW, ID_PE_CMW, encode_cmw_json_record
+from libattest.formats.cmw import CMW, encode_cmw_json_record
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def warn_if_cmw_critical(critical: bool) -> None:
     """
     if critical:
         msg = (
-            "CMW (id-pe-cmw, 1.3.6.1.5.5.7.1.35) extension is marked critical; "
+            f"CMW (id-pe-cmw, {get_oid_by_name('cmw')}) extension is marked critical; "
             "draft-ietf-rats-msg-wrap-23 §4.4.6 says it SHOULD NOT be critical."
         )
         logger.warning(msg)
@@ -179,7 +180,7 @@ def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
 
     Selects the extension value encoding from *oid*:
 
-    * ``oid == id-pe-cmw`` (``1.3.6.1.5.5.7.1.35``) → the value is a CMW JSON
+    * ``oid == id-pe-cmw`` (available as ``get_oid_by_name("cmw")``) → the value is a CMW JSON
       record wrapping the EAR JWT (draft-ietf-rats-msg-wrap-23 §4.4), produced by
       :func:`wrap_ear_in_cmw_json`.
     * any other *oid* (e.g. a demo/private OID) → the value is the raw EAR JWT
@@ -200,7 +201,7 @@ def encode_ear_extension(ear_jwt: str, *, oid: str) -> tuple[str, bytes]:
         extension value content.
 
     """
-    if oid == str(ID_PE_CMW):
+    if oid == get_oid_by_name("cmw"):
         return oid, wrap_ear_in_cmw_json(ear_jwt)
     return oid, ear_jwt.encode("utf-8")
 

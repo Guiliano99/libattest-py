@@ -33,8 +33,8 @@ STATIC_EAR_JWT = (
 
 
 def test_evidence_bridge_preserves_cose_hpke_public_api() -> None:
-    """GIVEN moved COSE helpers WHEN imported from the bridge THEN established callers still work."""
-    assert evidence_bridge.COSE_HPKE_STMT_TYPE_OID == cwt_jwt_utils.COSE_HPKE_STMT_TYPE_OID
+    """GIVEN moved COSE helpers WHEN imported from the bridge THEN non-OID aliases still work."""
+    assert not hasattr(evidence_bridge, "COSE_HPKE_STMT_TYPE_OID")
     assert evidence_bridge.open_cose_hpke_evidence is cwt_jwt_utils.open_cose_hpke_evidence
     assert evidence_bridge.seal_cose_hpke_evidence is cwt_jwt_utils.seal_cose_hpke_evidence
 

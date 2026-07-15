@@ -9,8 +9,8 @@ Some hosts ship ``tpm2-pytss`` whose compiled extension links against
 import of ``tpm2_pytss`` — and therefore of ``libattest.formats.tpm``
 (its package ``__init__`` eagerly imports ``tpms_attest``) — fails at
 collection time, which would block every pure-Python TPM-format test
-(``TpmAttestationParams`` codecs, PCR-selection JSON, the respInfo
-registry, and the new ``libattest.ra`` engine tests) even though none of
+(``TPM20QuoteReqInfo``/``TPM20QuoteRespInfo`` codecs, the respInfo registry,
+and the new ``libattest.ra`` engine tests) even though none of
 them touch the native library.
 
 To keep those pure-Python tests runnable, this conftest installs a minimal
@@ -91,8 +91,7 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401
     if not _TPM_STUB_ACTIVE:
         return
     skip_native = pytest.mark.skip(
-        reason="tpm2_pytss unavailable (libtss2-policy.so.0 missing); "
-        "native TPMS_ATTEST parsing required"
+        reason="tpm2_pytss unavailable (libtss2-policy.so.0 missing); native TPMS_ATTEST parsing required"
     )
     for item in items:
         if item.fspath.basename in _NATIVE_TPM_TEST_FILES:

@@ -10,8 +10,11 @@ from pyasn1.type import univ
 from pyasn1_alt_modules import rfc5280
 
 from libattest.formats.cmw import CMW
-from libattest.formats.eareat_hpke import resolve_cose_evidence_enc_oid
-from libattest.formats.eareat_hpke import EVIDENCE_ENC_PARAMS_OID, resolve_evidence_enc_oid
+from libattest.formats.eareat_hpke import (
+    EVIDENCE_ENC_PARAMS_OID,
+    resolve_cose_evidence_enc_oid,
+    resolve_evidence_enc_oid,
+)
 from libattest.formats.key_attest_pop import (
     KeyAttestChall,
     KeyAttestEvidence,
@@ -34,27 +37,28 @@ from libattest.formats.tpm import (
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
     encode_tpm20_quote_req_info,
+    id_tpm20_quote_req,
     id_tpm20_quote_res,
 )
-from libattest.formats.tpm.pcr_selection import resolve_tpm_pcr_selection_oid
 from libattest.formats.tpm.tcg import id_tcg_attest_certify, id_tcg_attest_quote
 
 
-def test_resolved_pcr_selection_oid_maps_to_tpm_quote_payload_types() -> None:
-    """GIVEN the platform profile OID WHEN resolved THEN each nonce direction has its type."""
-    oid = resolve_tpm_pcr_selection_oid()
+def test_tpm_quote_direction_oids_map_to_their_nonce_payload_types() -> None:
+    """GIVEN the quote request/response OIDs WHEN resolved THEN each direction has its own type."""
+    request_oid = str(id_tpm20_quote_req)
+    response_oid = str(id_tpm20_quote_res)
 
-    assert NONCE_REQUEST_STATEMENT_STRUCTURES[oid] is TPM20QuoteReqInfoASN1
-    assert get_nonce_request_statement_structure(oid) is TPM20QuoteReqInfoASN1
-    assert NONCE_RESPONSE_STATEMENT_STRUCTURES[oid] is TPM20QuoteRespInfoASN1
-    assert NONCE_RESPONSE_STATEMENT_STRUCTURES[str(id_tpm20_quote_res)] is TPM20QuoteRespInfoASN1
-    assert NONCE_RESPONSE_STATEMENT_STRUCTURES[str(id_tcg_attest_quote)] is TPM20QuoteRespInfoASN1
-    assert get_nonce_response_statement_structure(oid) is TPM20QuoteRespInfoASN1
+    assert NONCE_REQUEST_STATEMENT_STRUCTURES[request_oid] is TPM20QuoteReqInfoASN1
+    assert get_nonce_request_statement_structure(request_oid) is TPM20QuoteReqInfoASN1
+    assert get_nonce_request_statement_structure(response_oid) is None
+    assert NONCE_RESPONSE_STATEMENT_STRUCTURES[response_oid] is TPM20QuoteRespInfoASN1
+    assert get_nonce_response_statement_structure(response_oid) is TPM20QuoteRespInfoASN1
+    assert get_nonce_response_statement_structure(request_oid) is None
 
 
 def test_back_compat_request_decoder_wraps_the_registered_structure() -> None:
     """GIVEN the deprecated decoder accessor WHEN called THEN it decodes via the structure map."""
-    oid = resolve_tpm_pcr_selection_oid()
+    oid = str(id_tpm20_quote_req)
     der = encode_tpm20_quote_req_info(supported_hash_algos=[11])
 
     decoder = get_nonce_request_statement_decoder(oid)
@@ -101,15 +105,23 @@ def test_oid_accessors_agree_with_the_underlying_resolvers() -> None:
     assert get_oid_for_stmt_name("key-attest") == resolve_key_attest_evidence_oid()
     assert get_oid_for_stmt_name("jose-hpke-evidence") == resolve_evidence_enc_oid()
     assert get_oid_for_stmt_name("cose-hpke-evidence") == resolve_cose_evidence_enc_oid()
+    assert get_oid_for_stmt_name("tcg-attest-quote") == str(id_tcg_attest_quote)
 
-    assert get_nonce_request_oid_for_name("tpm-quote") == resolve_tpm_pcr_selection_oid()
+    assert get_nonce_request_oid_for_name("tpm-quote") == str(id_tpm20_quote_req)
+    assert get_nonce_request_oid_for_name("tpm-quote-request") == str(id_tpm20_quote_req)
     assert get_nonce_request_oid_for_name("key-attest") == resolve_key_attest_evidence_oid()
     assert get_nonce_request_oid_for_name("jose-hpke-evidence-params") == EVIDENCE_ENC_PARAMS_OID
 
+    assert get_nonce_response_oid_for_name("tpm-quote") == str(id_tpm20_quote_res)
+    assert get_nonce_response_oid_for_name("tpm-quote-response") == str(id_tpm20_quote_res)
     assert get_nonce_response_oid_for_name("tpm-quote-result") == str(id_tpm20_quote_res)
-    assert get_nonce_response_oid_for_name("tcg-attest-quote") == str(id_tcg_attest_quote)
 
+    assert get_oid_by_name("tpm-quote-request") == str(id_tpm20_quote_req)
+    assert get_oid_by_name("tpm-quote-response") == str(id_tpm20_quote_res)
     assert get_oid_by_name("tcg-attest-certify") == str(id_tcg_attest_certify)
+    assert get_oid_by_name("demo-ear-extension") == "1.7.6.5.123"
+    with pytest.raises(ValueError, match="ambiguous OID name 'tpm-quote'"):
+        get_oid_by_name("tpm-quote")
 
     for accessor in (get_oid_for_stmt_name, get_nonce_request_oid_for_name, get_nonce_response_oid_for_name):
         with pytest.raises(ValueError, match="unknown"):
