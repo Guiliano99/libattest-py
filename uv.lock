@@ -527,6 +527,7 @@ name = "libattest-py"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cbor2" },
     { name = "cryptography" },
     { name = "cwt" },
     { name = "keyutils-py" },
@@ -536,7 +537,6 @@ dependencies = [
     { name = "pyhpke" },
     { name = "pyjwt" },
     { name = "requests" },
-    { name = "tpm2-pytss" },
 ]
 
 [package.optional-dependencies]
@@ -554,6 +554,9 @@ testing = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
+tpm = [
+    { name = "tpm2-pytss" },
+]
 verifier-service = [
     { name = "fastapi" },
     { name = "uvicorn" },
@@ -561,6 +564,7 @@ verifier-service = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cbor2", specifier = ">=5.6.0" },
     { name = "codespell", marker = "extra == 'dev'", specifier = "==2.4.2" },
     { name = "cryptography", specifier = ">=49.0.0,<50.0.0" },
     { name = "cwt", git = "https://github.com/dajiaji/python-cwt.git?rev=29730487f4c23e9a0e2181c78e7b6337228d4c59" },
@@ -581,10 +585,10 @@ requires-dist = [
     { name = "robotframework-robocop", marker = "extra == 'dev'", specifier = "==8.2.11" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12,<1.0.0" },
     { name = "safety", marker = "extra == 'dev'", specifier = ">=3.7.0,<4.0.0" },
-    { name = "tpm2-pytss", specifier = ">=2.3.0" },
+    { name = "tpm2-pytss", marker = "extra == 'tpm'", specifier = ">=2.3.0" },
     { name = "uvicorn", marker = "extra == 'verifier-service'", specifier = ">=0.29.0" },
 ]
-provides-extras = ["verifier-service", "testing", "dev"]
+provides-extras = ["tpm", "verifier-service", "testing", "dev"]
 
 [[package]]
 name = "license-expression"

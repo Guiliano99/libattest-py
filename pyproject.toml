@@ -14,6 +14,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = [
+    "cbor2>=5.6.0",  # eagerly imported by libattest.formats.cmw
     "pyasn1>=0.6.3",
     "pyasn1-alt-modules>=0.4.10",
     "requests>=2.28.0",
@@ -21,7 +22,6 @@ dependencies = [
     "PyJWT>=2.13.0",  # ES256 compact JWS sign/verify (jose_jws); ECDSA via the cryptography dep above
     "pydantic>=2.9",  # EAR (EAT Attestation Result) token model (libattest.formats.eat_ear.cwt_jwt)
     "keyutils-py @ git+https://github.com/Guiliano99/keyutils-py.git",  # key generation helper (generate_key)
-    "tpm2-pytss>=2.3.0",  # mandatory: ESAPI access + TPMS_ATTEST parsing
     "pyhpke @ git+https://github.com/dajiaji/pyhpke.git@7b80aefc90b258ffe763e5b164205c8c689b7f24",
     # Pinned to a commit on `main`, not the v3.2.0 tag/PyPI release (which
     # maps to commit 02b8a69f, Sep 2025). main is 22 commits ahead as of
@@ -36,6 +36,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tpm = [
+    # Lazy-loaded by TPM attester/verifier helpers; omit it from MockCA-only
+    # environments, which use the pyasn1 TPM codecs without native ESAPI.
+    "tpm2-pytss>=2.3.0",
+]
 verifier-service = [
     "fastapi>=0.138.0",
     "uvicorn>=0.29.0",
