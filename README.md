@@ -31,10 +31,10 @@ The package provides:
 
 ## Quick Start
 
-Install the package (with optional verifier-service and testing extras):
+Install the package (with optional TPM, verifier-service, and testing extras):
 
 ```bash
-pip install -e ".[verifier-service,testing]"
+pip install -e ".[tpm,verifier-service,testing]"
 ```
 
 Generate evidence on the attester side and verify it locally with the
@@ -146,11 +146,12 @@ result = AttestResult(
 
 | Extra | Packages | Purpose |
 |-------|----------|---------|
+| `tpm` | `tpm2-pytss` | Native ESAPI, `TPMS_ATTEST`, and TPM signature helpers; required by TPM attesters and verifiers, but not by MockCA-only consumers. |
 | `verifier-service` | `fastapi`, `uvicorn` | `VeraisonServiceBase` and `verifier_service` module |
 | `testing` | `pytest`, `pytest-asyncio`, `httpx` | ASGI test client for FastAPI route tests |
 
 Install with:
 
 ```bash
-pip install "libattest-py[verifier-service,testing]"
+pip install "libattest-py[tpm,verifier-service,testing]"
 ```
