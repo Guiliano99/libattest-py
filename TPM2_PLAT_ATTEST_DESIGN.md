@@ -160,7 +160,7 @@ genm / NonceRequest:
   len     = 32
   type    = id_tpm20_quote_req (1.2.3.4.5)
   reqInfo = DER(TPM20QuoteReqInfo {
-               certificateName: ["ak"],
+               certificateName: ["ak-1", "ak-2", "ak-3"],
                supportedHashAlgo: [0x000B]
              })
 
@@ -172,6 +172,7 @@ genp / NonceResponse:
   expiry   = validity period in seconds
   type     = id_tpm20_quote_res (1.2.3.4.6)
   respInfo = DER(TPM20QuoteRespInfo {
+               certificateName: "ak-1",
                pcrSelection: [0, 1, 2, 3, 4],
                hashAlgo: 0x000B
              })
