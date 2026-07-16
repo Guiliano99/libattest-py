@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from libattest import get_nonce_response_oid_for_name
+from libattest import get_nonce_response_oid_for_name, get_oid_for_stmt_name
 from libattest.formats.respinfo import DEFAULT_RESP_INFO_REGISTRY
 from libattest.formats.stmt_mappings import NONCE_RESPONSE_STATEMENT_STRUCTURES
 
@@ -31,15 +31,21 @@ def test_default_registry_uses_tpm_quote_response_oid() -> None:
     assert oid in NONCE_RESPONSE_STATEMENT_STRUCTURES
 
 
-def test_every_registered_resp_info_oid_has_a_response_structure() -> None:
-    """GIVEN every OID with a respInfo JSON codec THEN it also has an ASN.1 decode structure.
+def test_default_registry_round_trips_tpm_quote_statement_oid() -> None:
+    """GIVEN a verifier-routed TcgAttestQuote WHEN converting respInfo THEN it round-trips.
 
-    A respInfo cannot be converted DER<->JSON without first being able to decode
-    its DER, so every :class:`RespInfoRegistry` OID must be a subset of
-    ``NONCE_RESPONSE_STATEMENT_STRUCTURES``. This is the parity check a new
-    statement format's registration must satisfy.
+    The MockCA forwards ``respInfo`` as JSON with the evidence-statement OID,
+    not the CMP response-type OID, so both OIDs must select TPM20QuoteRespInfo.
     """
-    registered = set(DEFAULT_RESP_INFO_REGISTRY.registered_oids())
-    structured = set(NONCE_RESPONSE_STATEMENT_STRUCTURES)
+    oid = get_oid_for_stmt_name("tcg-attest-quote")
+    payload = {"pcrSelection": [0, 1, 2, 3, 4], "hashAlgo": 11}
 
-    assert registered <= structured, registered - structured
+    der = DEFAULT_RESP_INFO_REGISTRY.from_json(oid, payload)
+
+    assert DEFAULT_RESP_INFO_REGISTRY.to_json(oid, der) == payload
+    assert oid not in NONCE_RESPONSE_STATEMENT_STRUCTURES
+
+
+def test_quote_statement_alias_is_not_a_nonce_response_type() -> None:
+    """GIVEN the verifier routing alias THEN it stays outside CMP wire mappings."""
+    assert get_oid_for_stmt_name("tcg-attest-quote") not in NONCE_RESPONSE_STATEMENT_STRUCTURES

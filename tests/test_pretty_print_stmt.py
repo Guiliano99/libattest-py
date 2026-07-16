@@ -38,7 +38,7 @@ def _quote_request() -> NonceRequest:
     request["reqTypeInfo"] = NonceRequestTypeInfo()
     request["reqTypeInfo"]["type"] = univ.ObjectIdentifier(get_nonce_request_oid_for_name("tpm-quote"))
     request["reqTypeInfo"]["reqInfo"] = tpm20_quote_request_info(
-        certificate_names=["ak"],
+        certificate_names=["ak-1", "ak-2", "ak-3"],
         supported_hash_algos=[0x000B],
     )
     return request
@@ -51,6 +51,7 @@ def _quote_response() -> NonceResponse:
     response["respTypeInfo"] = NonceResponseTypeInfo()
     response["respTypeInfo"]["type"] = univ.ObjectIdentifier(get_nonce_response_oid_for_name("tpm-quote"))
     response["respTypeInfo"]["respInfo"] = tpm20_quote_response_info(
+        certificate_name="ak-1",
         pcr_selection=[0, 1, 2, 3, 4],
         hash_algo=0x000B,
     )
@@ -63,7 +64,7 @@ def test_decode_req_info_decodes_tpm_quote_request() -> None:
 
     assert isinstance(decoded, TPM20QuoteReqInfoASN1)
     output = decoded.prettyPrint()
-    assert "ak" in output
+    assert "ak-1" in output
     assert "11" in output
 
 
@@ -73,6 +74,7 @@ def test_decode_resp_info_decodes_tpm_quote_response() -> None:
 
     assert isinstance(decoded, TPM20QuoteRespInfoASN1)
     output = decoded.prettyPrint()
+    assert "certificateName=ak-1" in output
     assert "pcrSelection=_PCRIndexSequence:" in output
     assert "hashAlgo=11" in output
 

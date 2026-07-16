@@ -31,6 +31,7 @@ from libattest.formats.tpm.quote_profile import (
     encode_tpm20_quote_resp_info,
     id_tpm20_quote_res,
 )
+from libattest.formats.tpm.tcg import id_tcg_attest_quote
 
 #: A DER(respInfo) → JSON-serialisable dict converter.
 ToJson = Callable[["bytes | bytearray | univ.Any"], dict[str, Any]]
@@ -118,6 +119,14 @@ def _build_default_registry() -> RespInfoRegistry:
     registry = RespInfoRegistry()
     registry.register(
         id_tpm20_quote_res,
+        tpm20_quote_resp_info_to_json,
+        tpm20_quote_resp_info_from_json,
+    )
+    # This is an out-of-band verifier-routing alias, not a CMP NonceResponse
+    # type. The MockCA's internal JSON submission keys respInfo by its evidence
+    # statement OID; keep that API concern out of NONCE_RESPONSE_STATEMENT_STRUCTURES.
+    registry.register(
+        id_tcg_attest_quote,
         tpm20_quote_resp_info_to_json,
         tpm20_quote_resp_info_from_json,
     )

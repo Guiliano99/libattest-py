@@ -19,7 +19,6 @@ from libattest.formats.csrattest import (
     id_it_nonceRequest,
     id_it_nonceResponse,
 )
-from libattest.formats.tpm import id_tpm20_quote_req, id_tpm20_quote_res
 
 NONCE = b"12345678901234567890123456789012"
 
@@ -79,7 +78,7 @@ def test_genm_sample_infotype_and_quote_oid_match_the_constants() -> None:
 
     nonce_request, rest = decoder.decode(bytes(itav["infoValue"]), asn1Spec=NonceRequest())
     assert rest == b""
-    assert str(nonce_request["reqTypeInfo"]["type"]) == str(id_tpm20_quote_req)
+    assert str(nonce_request["reqTypeInfo"]["type"]) == get_nonce_request_oid_for_name("tpm-quote")
 
 
 @pytest.mark.skipif(not _RESP_SAMPLE.exists(), reason=f"{_RESP_SAMPLE} not present (local end-to-end capture)")
@@ -93,4 +92,4 @@ def test_genp_sample_infotype_and_quote_oid_match_the_constants() -> None:
 
     nonce_response, rest = decoder.decode(bytes(itav["infoValue"]), asn1Spec=NonceResponse())
     assert rest == b""
-    assert str(nonce_response["respTypeInfo"]["type"]) == str(id_tpm20_quote_res)
+    assert str(nonce_response["respTypeInfo"]["type"]) == get_nonce_response_oid_for_name("tpm-quote")

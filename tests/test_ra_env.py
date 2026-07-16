@@ -15,6 +15,7 @@ import json
 import pytest
 
 from libattest import get_oid_by_name
+from libattest.formats.tpm import decode_tpm20_quote_resp_info
 from libattest.ra import RemoteAttestationEngine
 from libattest.ra.env import build_profile_registry_from_env
 
@@ -51,6 +52,18 @@ def test_quote_profile_seeded_from_routes(monkeypatch: pytest.MonkeyPatch) -> No
     assert quote.statement_oid == ID_TCG_ATTEST_QUOTE
     # Request and response OIDs are distinct wire positions (see quote_profile).
     assert quote.request_type_oid != quote.response_type_oid
+
+
+def test_quote_profile_returns_selected_ak_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GIVEN the TPM quote profile WHEN issuing a nonce THEN it selects ak-1."""
+    _set_routes(monkeypatch, {ID_TCG_ATTEST_QUOTE: "http://tpm-verifier:8444"})
+
+    quote = build_profile_registry_from_env().by_statement(ID_TCG_ATTEST_QUOTE)
+
+    assert quote is not None
+    response_info = quote.build_resp_info(0x000B)
+    assert response_info is not None
+    assert decode_tpm20_quote_resp_info(response_info) == ("ak-1", [0, 1, 2, 3, 4], 0x000B)
 
 
 def test_key_attest_profile_seeded_from_routes(monkeypatch: pytest.MonkeyPatch) -> None:

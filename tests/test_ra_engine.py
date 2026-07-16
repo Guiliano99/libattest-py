@@ -14,7 +14,7 @@ import pytest
 from pyasn1.codec.der import encoder as der_encoder
 
 import libattest.ra as ra_package
-from libattest import get_oid_for_stmt_name
+from libattest import get_nonce_request_oid_for_name, get_nonce_response_oid_for_name, get_oid_for_stmt_name
 from libattest.formats.csrattest import (
     prepare_attestation_bundle,
     prepare_opaque_attestation_statement,
@@ -243,10 +243,8 @@ def test_build_nonce_response_same_oid_profile_echoes_request_type():
 
 def test_build_nonce_response_quote_profile_uses_the_distinct_response_oid():
     """GIVEN a tpm_profile (distinct req/res OIDs) WHEN a response is built THEN it uses the RESPONSE oid, not the request oid echoed back."""
-    from libattest.formats.tpm import id_tpm20_quote_req, id_tpm20_quote_res
-
-    request_oid = str(id_tpm20_quote_req)
-    response_oid = str(id_tpm20_quote_res)
+    request_oid = get_nonce_request_oid_for_name("tpm-quote")
+    response_oid = get_nonce_response_oid_for_name("tpm-quote")
     assert request_oid != response_oid  # the profile under test is genuinely position-scoped
 
     profiles = ProfileRegistry()

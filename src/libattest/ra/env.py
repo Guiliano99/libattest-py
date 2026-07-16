@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 _ID_TCG_ATTEST_QUOTE = get_oid_by_name("tcg-attest-quote")
 _ID_KEY_ATTEST_EVIDENCE = get_oid_by_name("key-attest")
 
+# The platform demo advertises ak-1 as its first quote certificate-name label.
+# The RA/CA selects and returns that label in TPM20QuoteRespInfo.
+_TPM_QUOTE_SELECTED_CERTIFICATE_NAME = "ak-1"
+
 #: Certify-leg (key-attestation) request-type OID env var. Matches the
 #: gencmpclient C attester's ``TPM_KEY_ATTEST_OID_DEFAULT``.
 TPM_KEY_ATTEST_REQUEST_OID_ENV: str = "TPM_KEY_ATTEST_OID"
@@ -148,6 +152,7 @@ def build_profile_registry_from_env() -> ProfileRegistry:
                 statement_oid=_ID_TCG_ATTEST_QUOTE,
                 verifier_url=quote_url,
                 pcrs=pcrs,
+                certificate_name=_TPM_QUOTE_SELECTED_CERTIFICATE_NAME,
                 ear_oid=ear_oid,
             )
         )

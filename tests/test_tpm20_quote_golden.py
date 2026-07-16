@@ -26,27 +26,27 @@ from libattest.formats.tpm.quote_profile import (
 # fields — which would otherwise share one universal SEQUENCE OF tag — decode
 # unambiguously via schema-driven decode. rats_csr_asn.c's
 # ASN1_IMP_SEQUENCE_OF_OPT(..., 0) / (..., 1) fields must match these tags.
-REQ_GOLDEN = bytes.fromhex("300ba0040c02616ba10302010b")
+REQ_GOLDEN = bytes.fromhex("300da0060c04616b2d31a10302010b")
 # TPM20QuoteRespInfo's fields are unambiguous without tagging (certificateName
 # is a plain UTF8String, not a SEQUENCE OF; pcrSelection/hashAlgo are
 # mandatory), so this one carries its natural universal tags, unchanged.
-RESP_GOLDEN = bytes.fromhex("30180c02616b300f02010002010102010202010302010402010b")
+RESP_GOLDEN = bytes.fromhex("301a0c04616b2d31300f02010002010102010202010302010402010b")
 
 SHA256 = 11  # TPM_ALG_SHA256
 
 
 def test_req_info_matches_c_golden_der() -> None:
-    der = encode_tpm20_quote_req_info(certificate_names=["ak"], supported_hash_algos=[SHA256])
+    der = encode_tpm20_quote_req_info(certificate_names=["ak-1"], supported_hash_algos=[SHA256])
     assert der == REQ_GOLDEN
-    assert decode_tpm20_quote_req_info(der) == (["ak"], [SHA256])
+    assert decode_tpm20_quote_req_info(der) == (["ak-1"], [SHA256])
 
 
 def test_resp_info_matches_c_golden_der() -> None:
     der = encode_tpm20_quote_resp_info(
-        pcr_selection=[0, 1, 2, 3, 4], hash_algo=SHA256, certificate_name="ak"
+        pcr_selection=[0, 1, 2, 3, 4], hash_algo=SHA256, certificate_name="ak-1"
     )
     assert der == RESP_GOLDEN
-    assert decode_tpm20_quote_resp_info(der) == ("ak", [0, 1, 2, 3, 4], SHA256)
+    assert decode_tpm20_quote_resp_info(der) == ("ak-1", [0, 1, 2, 3, 4], SHA256)
 
 
 def test_pcr_index_out_of_range_rejected() -> None:
