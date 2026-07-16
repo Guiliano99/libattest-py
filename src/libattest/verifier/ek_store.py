@@ -31,9 +31,13 @@ import hmac
 
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from tpm2_pytss import TPM2B_PUBLIC
 
+from libattest._pytss import require_pytss
 from libattest.verifier.tpm.tpm_keyattest_verifier import TpmKeyAttestVerifier
+
+require_pytss()
+
+from tpm2_pytss import TPM2B_PUBLIC  # noqa: E402
 
 
 def _load_leaf(cert_chain_pem: bytes) -> x509.Certificate:

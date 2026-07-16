@@ -9,8 +9,8 @@ from __future__ import annotations
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
-from tpm2_pytss.types import TPMT_SIGNATURE
 
+from libattest._pytss import require_pytss
 from libattest.formats.media_types import TPM_PLATFORM_MEDIA_TYPE
 from libattest.formats.tpm.tpm_signature import to_tpm2b_public
 from libattest.formats.tpm.tpms_attest import (
@@ -31,6 +31,10 @@ from libattest.formats.tpm.tpms_attest import (
 from libattest.types import VerifyResult
 from libattest.verifier.tpm.base import TpmReferenceVerifier
 from libattest.verifier.tpm.reference_values import PcrReferenceValues, verify_pcr_quote
+
+require_pytss()
+
+from tpm2_pytss.types import TPMT_SIGNATURE  # noqa: E402
 
 
 def _load_ak_public_key(data: bytes):

@@ -15,7 +15,12 @@ both now delegate to the same pytss call.
 from __future__ import annotations
 
 from cryptography.hazmat.primitives import serialization
-from tpm2_pytss.types import TPM2B_PUBLIC, TPMT_SIGNATURE
+
+from libattest._pytss import require_pytss
+
+require_pytss()
+
+from tpm2_pytss.types import TPM2B_PUBLIC, TPMT_SIGNATURE  # noqa: E402
 
 
 def to_tpm2b_public(public_key) -> TPM2B_PUBLIC:

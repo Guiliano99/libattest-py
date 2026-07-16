@@ -47,7 +47,19 @@ from typing import Optional, Tuple, Union
 
 from pyasn1.codec.ber import decoder as ber_decoder
 from pyasn1.type import univ
-from tpm2_pytss import (
+
+from libattest._pytss import require_pytss
+from libattest.formats.tpm.tpms_attest import (
+    TPM_GENERATED_VALUE,
+    TPM_ST_ATTEST_QUOTE,
+    TpmQuoteSignatureEvidence,
+    parse_tpms_attest,
+    pcr_mask_to_indices,
+)
+
+require_pytss()
+
+from tpm2_pytss import (  # noqa: E402
     ESAPI,
     ESYS_TR,
     TPM2_ALG,
@@ -72,18 +84,10 @@ from tpm2_pytss import (
 
 # These helpers live in the ``utils`` submodule and are NOT re-exported at the
 # package top level, so they have to be imported explicitly.
-from tpm2_pytss.utils import (
+from tpm2_pytss.utils import (  # noqa: E402
     NVReadEK,
     create_ek_template,
     make_credential,
-)
-
-from libattest.formats.tpm.tpms_attest import (
-    TPM_GENERATED_VALUE,
-    TPM_ST_ATTEST_QUOTE,
-    TpmQuoteSignatureEvidence,
-    parse_tpms_attest,
-    pcr_mask_to_indices,
 )
 
 # --------------------------------------------------------------------------- #

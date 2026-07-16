@@ -25,14 +25,8 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
-from tpm2_pytss import (
-    TPM2B_NAME,
-    TPM2B_PUBLIC,
-    TPMT_PUBLIC,
-    TSS2_Exception,
-)
-from tpm2_pytss.utils import make_credential
 
+from libattest._pytss import require_pytss
 from libattest.formats.key_attest_pop import decode_key_attest_evidence
 from libattest.formats.tpm.tpm_name import compute_tpm_name
 from libattest.formats.tpm.tpm_signature import verify_tpm_signature
@@ -43,6 +37,16 @@ from libattest.formats.tpm.tpms_attest import (
 )
 from libattest.types import VerifyResult
 from libattest.verifier.trust import validate_ek_chain
+
+require_pytss()
+
+from tpm2_pytss import (  # noqa: E402
+    TPM2B_NAME,
+    TPM2B_PUBLIC,
+    TPMT_PUBLIC,
+    TSS2_Exception,
+)
+from tpm2_pytss.utils import make_credential  # noqa: E402
 
 _TPM_ST_ATTEST_CERTIFY = 0x8017
 

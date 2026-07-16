@@ -28,7 +28,11 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-from tpm2_pytss import TPM2_ALG, TPMS_ATTEST
+from libattest._pytss import require_pytss
+
+require_pytss()
+
+from tpm2_pytss import TPM2_ALG, TPMS_ATTEST  # noqa: E402
 
 #: ``TPM_GENERATED_VALUE`` prefixes every TPM-produced attestation block.
 TPM_GENERATED_VALUE = 0xFF544347
