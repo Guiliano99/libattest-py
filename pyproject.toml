@@ -37,8 +37,11 @@ dependencies = [
 
 [project.optional-dependencies]
 tpm = [
-    # Lazy-loaded by TPM attester/verifier helpers; omit it from MockCA-only
-    # environments, which use the pyasn1 TPM codecs without native ESAPI.
+    # Required by the TPM attester/verifier modules, which import it at module
+    # level behind the ``libattest._pytss.require_pytss()`` guard — so a missing
+    # install fails with a clear ImportError naming this extra.  Omit it from
+    # MockCA-only / RA-engine-only environments: ``libattest.ra`` and the pyasn1
+    # TPM codecs (formats.tpm.quote_profile / .tcg) never need native ESAPI.
     "tpm2-pytss>=2.3.0",
 ]
 verifier-service = [
