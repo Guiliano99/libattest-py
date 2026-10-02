@@ -24,12 +24,14 @@ from here for the freshness + claim tail.
 from __future__ import annotations
 
 import base64
+import hmac
 from typing import Any
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 __all__ = [
+    "LABEL_PROFILES",
     "TrustAnchorError",
     "appraise_eat_jwt",
     "check_nonce_and_claim",
@@ -38,22 +40,39 @@ __all__ = [
 ]
 
 
+# Claim-label profiles for :func:`check_nonce_and_claim`: JWT-style string labels
+# (``eat_nonce`` / ``mock_claim``, the default) or CWT integer labels (RFC 9711
+# ``eat_nonce`` = 10 as a raw byte string; the appraisal claim lives at a private int label).
+LABEL_PROFILES = ("jwt-string", "cwt-int")
+_CWT_EAT_NONCE_LABEL = 10
+
+
 class TrustAnchorError(Exception):
     """Raised when a token's ``kid`` has no trust anchor, or an unsupported key type."""
 
 
-def eat_nonce_bytes(b64: str) -> bytes:
-    """Decode an ``eat_nonce`` base64url string to raw bytes, tolerating padding.
+def eat_nonce_bytes(nonce: str | bytes) -> bytes:
+    """Decode an ``eat_nonce`` claim to raw bytes: base64url for a string, as-is for a byte string.
 
     JWT/JOSE base64url is unpadded, but some evidence producers (e.g. the ATG
     evidence generator's ``base64.URLEncoding``) emit ``=`` padding; comparing on
     bytes keeps the freshness check robust to either form. Returns ``b""`` on
-    malformed input, which then fails the ``== expected_nonce`` comparison.
+    malformed input, which then fails the nonce comparison. A CWT
+    ``eat_nonce`` (RFC 9711, label 10) is already a raw byte string and is returned unchanged.
     """
+    if isinstance(nonce, bytes):
+        return nonce
     try:
-        return base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
+        return base64.urlsafe_b64decode(nonce + "=" * (-len(nonce) % 4))
     except (ValueError, TypeError):
         return b""
+
+
+def _nonce_matches(nonce: Any, expected_nonce: bytes, nonce_type: type) -> bool:
+    """Constant-time compare an ``eat_nonce`` claim of the profile's type to the RA nonce; other types never match."""
+    if not isinstance(nonce, nonce_type):
+        return False
+    return hmac.compare_digest(eat_nonce_bytes(nonce), expected_nonce)
 
 
 def verify_eat_jwt(token_bytes: bytes, trust_anchors: dict[str, Any]) -> dict[str, Any]:
@@ -88,20 +107,49 @@ def verify_eat_jwt(token_bytes: bytes, trust_anchors: dict[str, Any]) -> dict[st
     )
 
 
-def check_nonce_and_claim(claims: dict[str, Any], expected_nonce: bytes, reference_mock_claim: str) -> tuple[str, str]:
+def check_nonce_and_claim(
+    claims: dict[Any, Any],
+    expected_nonce: bytes,
+    reference_mock_claim: str,
+    *,
+    label_profile: str = "jwt-string",
+    appraisal_label: int = -70000,
+) -> tuple[str, str]:
     """Shared freshness + ``mock_claim`` appraisal tail.
 
     ``claims`` is an already signature-verified EAT-JWT claims dict (or, for the
     HPKE inner step, the CMW protected header). Returns ``(ear_status, reason)``.
+
+    ``label_profile`` selects where the two claims live: ``"jwt-string"`` (default) reads
+    ``eat_nonce`` / ``mock_claim``; ``"cwt-int"`` reads the nonce at integer label 10 and
+    the appraisal claim at ``appraisal_label``. Profiles never cross-accept: under
+    ``"cwt-int"`` a claims map carrying the string labels as well is rejected.
+    The nonce type follows the profile: a base64url string for ``"jwt-string"`` (unchanged), a raw
+    byte string for ``"cwt-int"`` (RFC 9711); any other type is a mismatch. Compared in constant time.
+
+    :raises ValueError: unknown ``label_profile``.
     """
-    if eat_nonce_bytes(claims.get("eat_nonce", "")) != expected_nonce:
+    if label_profile == "jwt-string":
+        nonce_label, claim_label, nonce_type = "eat_nonce", "mock_claim", str
+    elif label_profile == "cwt-int":
+        nonce_label, claim_label, nonce_type = _CWT_EAT_NONCE_LABEL, appraisal_label, bytes
+        mixed = [k for k in ("eat_nonce", "mock_claim") if k in claims]
+        if mixed:
+            return "contraindicated", f"mixed claim labels: string label(s) {mixed} in a cwt-int claims set"
+        if nonce_label not in claims and claim_label not in claims:
+            return "contraindicated", f"claims set carries neither label {nonce_label} nor {claim_label}"
+    else:
+        raise ValueError(f"unknown label_profile {label_profile!r}; expected one of {LABEL_PROFILES}")
+
+    if not _nonce_matches(claims.get(nonce_label, ""), expected_nonce, nonce_type):
         return "contraindicated", "nonce mismatch (stale or replayed evidence)"
 
-    mock_claim = claims.get("mock_claim", "")
+    mock_claim = claims.get(claim_label, "")
+    claim_name = "mock_claim" if label_profile == "jwt-string" else f"claim {claim_label}"
     if mock_claim != reference_mock_claim:
         return (
             "contraindicated",
-            f"appraisal failed: mock_claim={mock_claim!r} != reference {reference_mock_claim!r}",
+            f"appraisal failed: {claim_name}={mock_claim!r} != reference {reference_mock_claim!r}",
         )
     return "affirming", "all checks passed"
 

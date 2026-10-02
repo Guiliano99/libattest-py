@@ -618,6 +618,32 @@ def seal_cose_hpke_evidence(
     )
 
 
+_CBOR_TAG_COSE_SIGN1 = 18
+_CBOR_TAG_CWT = 61  # RFC 8392 S6: "CWT" tag wrapping the COSE_Sign1 / COSE_Encrypt0 / COSE_Mac0
+
+
+def _require_cose_sign1(payload: bytes) -> bytes:
+    """Return *payload* as a bare tag-18 ``COSE_Sign1``, unwrapping an outer CWT tag 61.
+
+    python-cwt rejects a tag-61 token ("Unsupported or unknown CBOR tag(61)") but verifies the
+    inner tag-18 item, so the CWT tag is stripped first. HPKE base mode has no sender
+    authentication, so the signature is the only integrity gate: anything that is not a
+    ``COSE_Sign1`` (e.g. an unsigned claims map sealed to the recipient key) is refused.
+
+    :raises ValueError: *payload* is not CBOR, or is neither tag 18 nor tag 61(tag 18).
+    """
+    try:
+        item = cbor2.loads(payload)
+    except (cbor2.CBORDecodeError, ValueError) as exc:
+        raise ValueError("COSE-HPKE plaintext is not valid CBOR") from exc
+    if isinstance(item, cbor2.CBORTag) and item.tag == _CBOR_TAG_CWT:
+        item = item.value
+        payload = cast(bytes, cbor2.dumps(item))
+    if not (isinstance(item, cbor2.CBORTag) and item.tag == _CBOR_TAG_COSE_SIGN1):
+        raise ValueError("COSE-HPKE plaintext is not a COSE_Sign1 (tag 18, optionally inside CWT tag 61)")
+    return payload
+
+
 def open_cose_hpke_evidence(
     encrypted: bytes,
     recipient_priv_key: ec.EllipticCurvePrivateKey,
@@ -627,12 +653,15 @@ def open_cose_hpke_evidence(
 
     *verify_key* must match whether *encrypted* was sealed with a *signing_key*: pass it
     to verify the inner ``COSE_Sign1``, or omit it for the encrypt-only (unsigned) form.
+    With *verify_key* the decrypted plaintext may be a bare ``COSE_Sign1`` (tag 18) or one
+    wrapped in the CWT tag (61, as the xclaim CLI emits); an unsigned claims map or any
+    other shape is refused with :class:`ValueError`.
     """
     recipient_key = _ec_priv_to_cose_key(recipient_priv_key, kid="cose-hpke-recipient")
     payload = cast(bytes, COSE.new().decode(encrypted, recipient_key))
     if verify_key is not None:
         signer_key = _ec_pub_to_cose_key(verify_key, kid="cose-hpke-signer")
-        payload = cast(bytes, COSE.new().decode(payload, signer_key))
+        payload = cast(bytes, COSE.new().decode(_require_cose_sign1(payload), signer_key))
     return cbor2.loads(payload)
 
 

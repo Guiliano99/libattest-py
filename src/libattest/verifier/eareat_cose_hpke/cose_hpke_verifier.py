@@ -17,8 +17,8 @@ Appraisal gates:
 * **G1/G2** COSE-HPKE-open with the verifier's recipient key (AEAD/tamper failure → contraindicated);
 * **G3** verify the nested ``COSE_Sign1`` against the attester's EAT key (done inside the same
   ``open_cose_hpke_evidence`` call via ``verify_key``);
-* **G4** freshness: CWT ``eat_nonce`` claim == RA nonce;
-* **G5** appraise ``mock_claim`` against the reference.
+* **G4** freshness: the nonce claim (``eat_nonce``, or label 10 under ``cwt-int``) == RA nonce;
+* **G5** appraise the appraisal claim (``mock_claim``, or ``appraisal_label`` under ``cwt-int``) against the reference.
 
 The EAR itself stays a signed JWS in Veraison wire format (the COSE change is on the
 Evidence leg only), so ``_build_ear_jwt`` mirrors the JOSE verifier verbatim except for
@@ -44,7 +44,7 @@ from libattest.formats.eat_ear.cwt_jwt_utils import open_cose_hpke_evidence
 from libattest.formats.media_types import EAT_CWT, base_media_type
 from libattest.types import VerifyResult
 from libattest.verifier.base import AttestationVerifier
-from libattest.verifier.eat_appraisal import check_nonce_and_claim
+from libattest.verifier.eat_appraisal import LABEL_PROFILES, check_nonce_and_claim
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def _ear_token_to_veraison_claims(token: EARToken) -> dict[str, Any]:
     return claims
 
 
-class CoseEatHpkeVerifier(AttestationVerifier):
+class CoseEatHpkeVerifier(AttestationVerifier):  # pylint: disable=too-many-instance-attributes
     """Verifier for COSE-HPKE-0-encrypted EAR/EAT evidence.
 
     Parameters
@@ -123,6 +123,13 @@ class CoseEatHpkeVerifier(AttestationVerifier):
         ``cose-hpke-verifier``); the demo asserts it to prove the COSE route.
     ear_signing_key / hpke_recipient_key:
         Optional P-256 keys; fresh ones are generated when omitted.
+    label_profile / appraisal_label:
+        Where the CWT claims live: ``"jwt-string"`` (default, ``eat_nonce`` / ``mock_claim``) or
+        ``"cwt-int"`` (nonce at label 10 as a byte string, appraisal claim at ``appraisal_label``,
+        default -70000, e.g. the xclaim CLI's output). See
+        :func:`libattest.verifier.eat_appraisal.check_nonce_and_claim`.
+
+    :raises ValueError: unknown ``label_profile``.
 
     """
 
@@ -137,14 +144,20 @@ class CoseEatHpkeVerifier(AttestationVerifier):
         verifier_developer: str = DEFAULT_VERIFIER_DEVELOPER,
         ear_signing_key: ec.EllipticCurvePrivateKey | None = None,
         hpke_recipient_key: ec.EllipticCurvePrivateKey | None = None,
+        label_profile: str = "jwt-string",
+        appraisal_label: int = -70000,
     ) -> None:
         """Store appraisal policy and the verifier's signing / recipient keys."""
+        if label_profile not in LABEL_PROFILES:
+            raise ValueError(f"unknown label_profile {label_profile!r}; expected one of {LABEL_PROFILES}")
         self._attestation_public_key = _load_ec_public_key(attestation_public_key)
         self._reference_mock_claim = reference_mock_claim
         self._scheme_name = scheme_name
         self._verifier_developer = verifier_developer
         self._ear_signing_key = ear_signing_key or ec.generate_private_key(ec.SECP256R1())
         self._hpke_recipient_key = hpke_recipient_key or ec.generate_private_key(ec.SECP256R1())
+        self._label_profile = label_profile
+        self._appraisal_label = appraisal_label
 
     # ── published keys ───────────────────────────────────────────────────────────
     def evidence_encryption_jwk(self, *, kid: str = "cose-hpke-verifier") -> dict:
@@ -179,7 +192,8 @@ class CoseEatHpkeVerifier(AttestationVerifier):
     ) -> VerifyResult:
         """Appraise one CMW/COSE-HPKE statement and, on success, issue a signed EAR JWT.
 
-        ``token_bytes`` is the ``AttestationStatement.stmt`` DER (a CMW ``UTF8String``).
+        ``token_bytes`` is the ``AttestationStatement.stmt`` DER: a ``DER(CMW)`` in the ``cbor`` arm
+        (``OCTET STRING``) holding the CBOR record ``["application/cose", <COSE_Encrypt0>]``.
         """
         if base_media_type(media_type) not in (EAT_CWT, "application/octet-stream"):
             return VerifyResult.unknown(f"unsupported media type {media_type!r}; expected {EAT_CWT!r}")
@@ -209,8 +223,14 @@ class CoseEatHpkeVerifier(AttestationVerifier):
         if not isinstance(claims, dict):
             return VerifyResult.contraindicated("COSE payload is not a CWT claims map")
 
-        # G4 (eat_nonce freshness) + G5 (mock_claim) — shared with the JOSE demo's appraisal tail.
-        status, reason = check_nonce_and_claim(claims, expected_nonce, self._reference_mock_claim)
+        # G4 (nonce freshness) + G5 (appraisal claim) per the label profile — shared with the JOSE demo's tail.
+        status, reason = check_nonce_and_claim(
+            claims,
+            expected_nonce,
+            self._reference_mock_claim,
+            label_profile=self._label_profile,
+            appraisal_label=self._appraisal_label,
+        )
         if status != "affirming":
             return VerifyResult.contraindicated(reason)
 
