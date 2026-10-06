@@ -27,6 +27,13 @@ The package provides:
 > Run `make check-oids` to audit this policy and save the complete findings report to
 > `build/oid-access-audit.txt`; format-owned definitions are reported rather than silently ignored.
 
+## Coding Guidelines
+
+See [`GUIDELINES.md`](GUIDELINES.md) — enforced project conventions, most
+importantly: generic sign/verify operations go through `keyutils_py` (never
+raw `cryptography` ECDSA/RSA calls outside tests), and attestation statements
+stay opaque `OCTET STRING`s routed by OID.
+
 ---
 
 ## Quick Start
