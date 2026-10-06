@@ -49,3 +49,19 @@ branch; this branch: `demo/docker_RATS_NXP`).
   (`KeyAttestPoPChallenge`, in `NonceResponse.responseParams`) and the
   attester→CA proof (`KeyAttestPoPProof`, cert extension), bound to the
   enrolled key.
+
+## Verification boundary (per format)
+
+| Format | Decode / inspect | Verify signature | Why |
+|--------|------------------|------------------|-----|
+| ELE dev-attest (0xDB) | yes | **yes** | layout from the public `sab_dev_attest.h` header; anchor injectable. Fully exercised in `tools/nxp_e2e_offline.py`. |
+| ELE key-attest (0x74) | yes (best-effort 2GO-TLV) | **no — `NotImplementedError`** | the "signed TLV buffer" schema exists only in closed ELE firmware; NXP's own reference test treats it as a black box; no public anchor. |
+| SE05x attested read | yes (tag map) | **no — `NotImplementedError`** | composition documented (AN13254) but the anchor is a per-chip factory attestation key; needs exact APDU reconstruction, not producible in simulators. |
+
+"Inspect" means the codec can parse and pretty-print what you received.
+"Verify" means the signature can be checked against a trust anchor and the
+statement appraised. In the demo environment the anchor is the **simulated
+trust domain** in all cases, and for 0x74/SE05x verification is not
+implemented at all. `imx-secure-enclave` / RM00284 are evidence-*generation*
+libraries (local primitives, no verifier, no anchor, no standard token);
+this package supplies the remote-attestation layer on top.

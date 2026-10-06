@@ -27,6 +27,51 @@ The package provides:
 > Run `make check-oids` to audit this policy and save the complete findings report to
 > `build/oid-access-audit.txt`; format-owned definitions are reported rather than silently ignored.
 
+## NXP demo scope — what this branch proves (and what it does not)
+
+This branch (`demo/docker_RATS_NXP`) is a **mechanism demonstration**, not a
+production NXP attestation. Read the boundary before relying on any claim here.
+
+**What it does prove (end-to-end, offline, real execution):**
+
+- The *flow*: NXP-style attestation evidence is generated, wrapped as an
+  opaque OID-typed `AttestationStatement`, DER'd into an
+  `AttestationBundle`, routed by the CA/RA **on the OID alone** (format-
+  agnostic — it never parses the inner bytes), and appraised.
+- One fully-verified reference type: **ELE device attestation (0xDB)**.
+  `tools/nxp_e2e_offline.py` runs 15 gates — signature verify, RA-nonce
+  freshness binding, policy facts, pretty print, debug log — and rejects
+  tamper / replay / rogue-anchor.
+- The *extend-a-format path*: **ELE key attestation (0x74)** and **SE05x**
+  have the same OID registration, decode, and human-readable pretty print,
+  showing how a new format plugs in.
+
+**What it does NOT do — do not claim otherwise:**
+
+- It does **not verify** the ELE key-attest (0x74) or SE05x signatures. Those
+  `verify_*` functions raise `NotImplementedError` on purpose: the 0x74
+  signed-byte schema exists only in closed ELE firmware (NXP's own reference
+  test treats the buffer as a black box), and the SE05x anchor is per-chip
+  factory data. **Decoding and inspection work; trust does not.**
+- The **trust anchor is simulated.** Here the evidence is produced by a Python
+  simulator and signed by keys *we* chose — not a real i.MX93 ELE under NXP's
+  root. Even the verified dev-attest is verified **only inside the simulated
+  trust domain** (see `SimNXP 2GO` in `CONTEXT.md`).
+- `imx-secure-enclave` / RM00284 themselves provide **attestation evidence
+  generation** (local primitives: `hsm_dev_attest`, `hsm_pub_key_attest`) — a
+  signed 280-byte struct or a signed TLV buffer. The device already embeds a
+  nonce/challenge *inside* the evidence (`dev_attest.nounce`,
+  `key_attest.auth_challenge`), but the repo ships **no verifier, no NXP root
+  public key, no RA-side nonce handshake, and no standard token**
+  (EAT/COSE/X.509). The remote-attestation layer this package adds on top is:
+  wrap as an opaque OID-typed statement → OID route → issue + check the RA
+  nonce → verify against an anchor → return a verdict.
+
+One-line honest claim: *this demonstrates how NXP attestation evidence plugs
+into a CMP/CSR attestation workflow, with device attestation fully verified as
+the reference type and key-attest/SE05x showing the extend path up to the
+closed-firmware boundary.*
+
 ## Coding Guidelines
 
 See [`GUIDELINES.md`](GUIDELINES.md) — enforced project conventions, most
