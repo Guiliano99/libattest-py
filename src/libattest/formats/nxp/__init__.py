@@ -45,8 +45,8 @@ from libattest.formats.nxp.oid import (
 )
 from libattest.formats.nxp.pretty import (
     log_statement_debug,
-    pretty_print_nxp_bundle,
-    pretty_print_nxp_statement,
+    pretty_print_statement,
+    pretty_print_stmt_bundle,
 )
 from libattest.formats.nxp.se05x import (
     Se05xAttestStatement,
@@ -72,9 +72,9 @@ __all__ = [
     "parse_tlvs",
     "pretty_print_ele_dev_attest",
     "pretty_print_ele_key_attest",
-    "pretty_print_nxp_bundle",
-    "pretty_print_nxp_statement",
     "pretty_print_se05x_attest",
+    "pretty_print_statement",
+    "pretty_print_stmt_bundle",
     "verify_ele_dev_attest_signature",
     "log_statement_debug",
     "resolve_ele_dev_attest_oid",

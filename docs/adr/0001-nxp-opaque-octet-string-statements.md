@@ -34,9 +34,11 @@ OID-keyed verifier (libattest-py) is the *only* component that parses them.
    `libattest.formats.nxp` (per-OID codecs), mirroring `formats.tpm.tcg`.
 3. The CA/RA stays format-agnostic: it routes by statement OID
    (`VERIFIER_OID_ROUTES` compose env) and never inspects the inner bytes.
-4. Human inspection: OID-keyed `pretty_print_nxp_statement(oid, payload)`
-   plus `log_statement_debug` (DEBUG level, `libattest.formats.nxp` logger)
-   in the verifier.
+4. Human inspection: `libattest.formats.nxp` exposes exactly three functions —
+   `pretty_print_statement(stmt)`, `pretty_print_stmt_bundle(bundle)` and
+   `log_statement_debug(stmt_or_bundle)` — each of which decodes the ASN.1,
+   reads the `type` OID, unwraps the `stmt OCTET STRING` and renders with the
+   matching codec.
 
 ## Alternatives considered
 
