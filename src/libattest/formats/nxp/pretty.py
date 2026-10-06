@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 from typing import Union
 
-from pyasn1.codec.der import decoder
 from pyasn1.type import univ
 
 from libattest.formats.csrattest.csr_attest_structures import (
@@ -33,6 +32,7 @@ from libattest.formats.csrattest.csr_attest_structures import (
     AttestationStatement,
     decode_attestation_bundle,
     decode_attestation_statement,
+    unwrap_attestation_statement,
 )
 from libattest.formats.nxp.ele_dev_attest import (
     EleDevAttestError,
@@ -93,17 +93,14 @@ def _stmt_oid(stmt: AttestationStatement) -> str:
 
 
 def _stmt_payload(stmt: AttestationStatement) -> bytes:
-    """The inner ``OCTET STRING`` bytes of ``stmt``.
+    """The inner payload bytes of ``stmt``.
 
-    ``stmt`` is an ASN.1 open type.  For an opaque NXP statement its DER is an
-    ``OCTET STRING`` (leading tag ``0x04``); that wrapper is stripped to return
-    the raw NXP-native payload.  An ``stmt`` that is already a DER ASN.1
-    structure (e.g. a SEQUENCE) is returned as-is.
+    ``stmt`` is an ASN.1 open type.  Reuses :func:`unwrap_attestation_statement`
+    (csrattest): an opaque ``OCTET STRING`` wrapper is stripped; a DER ASN.1
+    structure is returned verbatim.
     """
-    b = bytes(stmt["stmt"])
-    if b[:1] == b"\x04":  # OCTET STRING wrapper → unwrap
-        return bytes(decoder.decode(b, univ.OctetString())[0])
-    return b  # ASN.1 evidence: already the payload DER
+    inner, _wrapped = unwrap_attestation_statement(bytes(stmt["stmt"]))
+    return inner
 
 
 def _first_component_tag(der: bytes) -> int | None:

@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from libattest.formats.nxp.tlv import TlvEntry, parse_tlvs
+from libattest.formats.nxp.tlv import TlvEntry, format_tlv_line, parse_tlvs
 
 logger = logging.getLogger("libattest.formats.nxp.ele_key_attest")
 
@@ -113,20 +113,6 @@ def pretty_print_ele_key_attest(stmt: EleKeyAttestStatement) -> str:
         f"ELE key-attest certificate (2GO-TLV, {len(stmt.raw)} B, {len(stmt.entries)} TLVs)",
     ]
     for e in stmt.entries:
-        name = stmt.named(e.tag)
-        v = e.value
-        # Heuristic: render short integer-ish values as hex, long as hex dump.
-        if len(v) <= 8:
-            shown = v.hex()
-        else:
-            shown = v.hex()
-            if len(v) > 48:
-                shown = v[:48].hex() + f"... (+{len(v) - 48}B)"
-        lines.append(f"  [off {e.offset:3d}] 0x{e.tag:02X} {name:<22} {shown}")
+        lines.append(format_tlv_line(e.tag, stmt.named(e.tag), e.value, e.offset, name_width=22))
     return "\n".join(lines)
 
-
-def __getattr__(name):
-    if name == "pretty_print_ele_key_attest":
-        return pretty_print_ele_key_attest
-    raise AttributeError(name)

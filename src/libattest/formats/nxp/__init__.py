@@ -21,6 +21,7 @@ Modules
 from __future__ import annotations
 
 from libattest.formats.nxp.ele_dev_attest import (
+    EleDevAttestError,
     EleDevAttestStatement,
     canonical_signed_bytes,
     decode_ele_dev_attest,
@@ -28,16 +29,14 @@ from libattest.formats.nxp.ele_dev_attest import (
     verify_ele_dev_attest_signature,
 )
 from libattest.formats.nxp.ele_key_attest import (
+    EleKeyAttestError,
     EleKeyAttestStatement,
     decode_ele_key_attest,
     pretty_print_ele_key_attest,
 )
 from libattest.formats.nxp.oid import (
-    ELE_DEV_ATTEST_OID,
     ELE_DEV_ATTEST_OID_DEFAULT,
-    ELE_KEY_ATTEST_OID,
     ELE_KEY_ATTEST_OID_DEFAULT,
-    SE05X_ATTEST_OID,
     SE05X_ATTEST_OID_DEFAULT,
     resolve_ele_dev_attest_oid,
     resolve_ele_key_attest_oid,
@@ -49,21 +48,22 @@ from libattest.formats.nxp.pretty import (
     pretty_print_stmt_bundle,
 )
 from libattest.formats.nxp.se05x import (
+    Se05xAttestError,
     Se05xAttestStatement,
     decode_se05x_attest,
     pretty_print_se05x_attest,
 )
-from libattest.formats.nxp.tlv import parse_tlvs, tlv
+from libattest.formats.nxp.tlv import encode_tlv, parse_tlvs
 
 __all__ = [
-    "ELE_DEV_ATTEST_OID",
     "ELE_DEV_ATTEST_OID_DEFAULT",
-    "ELE_KEY_ATTEST_OID",
     "ELE_KEY_ATTEST_OID_DEFAULT",
+    "EleDevAttestError",
     "EleDevAttestStatement",
+    "EleKeyAttestError",
     "EleKeyAttestStatement",
-    "SE05X_ATTEST_OID",
     "SE05X_ATTEST_OID_DEFAULT",
+    "Se05xAttestError",
     "Se05xAttestStatement",
     "canonical_signed_bytes",
     "decode_ele_dev_attest",
@@ -80,5 +80,5 @@ __all__ = [
     "resolve_ele_dev_attest_oid",
     "resolve_ele_key_attest_oid",
     "resolve_se05x_attest_oid",
-    "tlv",
+    "encode_tlv",
 ]

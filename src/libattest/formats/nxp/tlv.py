@@ -17,7 +17,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Iterator
 
-__all__ = ["TlvEntry", "parse_tlvs", "tlv", "find_tlv"]
+__all__ = ["TlvEntry", "parse_tlvs", "encode_tlv", "find_tlv", "format_tlv_line"]
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ def parse_tlvs(buf: bytes) -> list[TlvEntry]:
     return out
 
 
-def tlv(tag: int, value: bytes) -> bytes:
+def encode_tlv(tag: int, value: bytes) -> bytes:
     """Encode one TLV (1-byte tag; 1-byte/0x81/0x82 length as needed)."""
     n = len(value)
     if n < 0x80:
@@ -88,4 +88,16 @@ def find_tlv(entries: Iterator[TlvEntry] | list[TlvEntry], tag: int) -> TlvEntry
     return None
 
 
-__all__ = ["TlvEntry", "parse_tlvs", "tlv", "find_tlv"]
+def format_tlv_line(tag: int, name: str, value: bytes, offset: int, name_width: int = 18) -> str:
+    """Render one TLV entry as a prettyPrint row.
+
+    Long values (>48 B) are truncated with a ``(+NB)`` count so a statement
+    stays human-readable.  *name* is the resolved human tag name (the caller
+    decides how unknown tags are labeled).
+    """
+    shown = value.hex()
+    if len(value) > 48:
+        shown = value[:48].hex() + f"... (+{len(value) - 48}B)"
+    return f"  [off {offset:3d}] 0x{tag:02X} {name:<{name_width}} {shown}"
+
+

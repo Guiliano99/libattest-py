@@ -27,14 +27,12 @@ canonical buffer ``bytes[8:184]``.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import struct
 from dataclasses import dataclass, field
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric import ec, utils as ecu
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature  # noqa: F401  (re-export for callers)
+from cryptography.hazmat.primitives.asymmetric import ec, utils as ec_utils
 
 # Generic (non-TPM / non-NXP) sign + verify is centralised in keyutils-py —
 # the package's declared key-operations dependency.  We only route the raw
@@ -142,10 +140,6 @@ class EleDevAttestStatement:
         return pretty_print_ele_dev_attest(self)
 
 
-def _hex(b: bytes, per: int = 16) -> str:
-    return " ".join(b[i : i + per].hex() for i in range(0, len(b), per))
-
-
 def canonical_signed_bytes(stmt: EleDevAttestStatement | bytes) -> bytes:
     """Return the attester-signed canonical buffer (bytes[8:184]).
 
@@ -188,7 +182,7 @@ def verify_ele_dev_attest_signature(
         raise EleDevAttestError(f"signature must be {DEV_ATTEST_SIGN_SIZE} bytes, got {len(raw)}")
     r = int.from_bytes(raw[:48], "big")
     s = int.from_bytes(raw[48:], "big")
-    der = ecu.encode_dss_signature(r, s)
+    der = ec_utils.encode_dss_signature(r, s)
     # The attester signs SHA384 over the canonical buffer; the raw bytes are
     # passed and the ECDSA primitive hashes them (matches sim_attest.py's sign
     # side).  The generic ECDSA verify is centralised in keyutils-py.

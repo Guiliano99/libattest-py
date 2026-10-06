@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from libattest.formats.nxp.tlv import TlvEntry, parse_tlvs, find_tlv
+from libattest.formats.nxp.tlv import TlvEntry, format_tlv_line, parse_tlvs, find_tlv
 
 logger = logging.getLogger("libattest.formats.nxp.se05x")
 
@@ -165,14 +165,6 @@ def pretty_print_se05x_attest(stmt: Se05xAttestStatement) -> str:
         f"SE05x attested-read statement (TLV block, {len(stmt.raw)} B, {len(stmt.entries)} TLVs)",
     ]
     for e in stmt.entries:
-        name = _TAG_NAMES.get(e.tag, f"unknown(0x{e.tag:02X})")
-        v = e.value
-        shown = v.hex() if len(v) <= 48 else v[:48].hex() + f"... (+{len(v) - 48}B)"
-        lines.append(f"  [off {e.offset:3d}] 0x{e.tag:02X} {name:<18} {shown}")
+        lines.append(format_tlv_line(e.tag, _TAG_NAMES.get(e.tag, f"unknown(0x{e.tag:02X})"), e.value, e.offset))
     return "\n".join(lines)
 
-
-def __getattr__(name):
-    if name == "pretty_print_se05x_attest":
-        return pretty_print_se05x_attest
-    raise AttributeError(name)

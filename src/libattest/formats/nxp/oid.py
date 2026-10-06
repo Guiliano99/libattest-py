@@ -25,12 +25,6 @@ ELE_KEY_ATTEST_OID_DEFAULT = "1.3.6.1.4.1.99999.31"
 #: SE05x attested read (AN13254) — attestation TLV block.
 SE05X_ATTEST_OID_DEFAULT = "1.3.6.1.4.1.99999.32"
 
-#: Alias: the ELE key-attest OID.
-ELE_DEV_ATTEST_OID = ELE_DEV_ATTEST_OID_DEFAULT
-ELE_KEY_ATTEST_OID = ELE_KEY_ATTEST_OID_DEFAULT
-SE05X_ATTEST_OID = SE05X_ATTEST_OID_DEFAULT
-
-
 def _env_or(env_name: str, default: str) -> str:
     value = os.environ.get(env_name)
     return value.strip() if value and value.strip() else default
@@ -52,11 +46,8 @@ def resolve_se05x_attest_oid() -> str:
 
 
 __all__ = [
-    "ELE_DEV_ATTEST_OID",
     "ELE_DEV_ATTEST_OID_DEFAULT",
-    "ELE_KEY_ATTEST_OID",
     "ELE_KEY_ATTEST_OID_DEFAULT",
-    "SE05X_ATTEST_OID",
     "SE05X_ATTEST_OID_DEFAULT",
     "resolve_ele_dev_attest_oid",
     "resolve_ele_key_attest_oid",
