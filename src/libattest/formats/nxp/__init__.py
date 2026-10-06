@@ -22,8 +22,10 @@ from __future__ import annotations
 
 from libattest.formats.nxp.ele_dev_attest import (
     EleDevAttestStatement,
+    canonical_signed_bytes,
     decode_ele_dev_attest,
     pretty_print_ele_dev_attest,
+    verify_ele_dev_attest_signature,
 )
 from libattest.formats.nxp.ele_key_attest import (
     EleKeyAttestStatement,
@@ -63,6 +65,7 @@ __all__ = [
     "SE05X_ATTEST_OID",
     "SE05X_ATTEST_OID_DEFAULT",
     "Se05xAttestStatement",
+    "canonical_signed_bytes",
     "decode_ele_dev_attest",
     "decode_ele_key_attest",
     "decode_se05x_attest",
@@ -72,6 +75,7 @@ __all__ = [
     "pretty_print_nxp_bundle",
     "pretty_print_nxp_statement",
     "pretty_print_se05x_attest",
+    "verify_ele_dev_attest_signature",
     "log_statement_debug",
     "resolve_ele_dev_attest_oid",
     "resolve_ele_key_attest_oid",

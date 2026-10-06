@@ -288,9 +288,3 @@ def pretty_print_ele_dev_attest(stmt: EleDevAttestStatement) -> str:
         f"    s {s.hex()}",
     ]
     return "\n".join(lines)
-
-
-def __getattr__(name):
-    if name == "pretty_print_ele_dev_attest":
-        return pretty_print_ele_dev_attest
-    raise AttributeError(name)

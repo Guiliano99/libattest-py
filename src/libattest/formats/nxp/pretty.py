@@ -9,7 +9,7 @@ OID (the same OID the CA/RA routes on) so a bundle's statements can be dumped
 without the caller knowing the format:
 
     >>> from libattest.formats.nxp import pretty_print_nxp_statement
-    >>> print(pretty_print_nxp_statement(bundle, oid))
+    >>> print(pretty_print_nxp_statement(oid, stmt_bytes))
 
 Also exposes :func:`log_statement_debug`, which emits the full prettyPrint at
 ``DEBUG`` level under the ``libattest.formats.nxp`` logger — flip the verifier's
@@ -103,6 +103,3 @@ def log_statement_debug(oid: str, payload: bytes, extra: str = "") -> None:
         suffix,
         pretty_print_nxp_statement(oid, payload),
     )
-
-
-__all__ = ["pretty_print_nxp_statement", "pretty_print_nxp_bundle", "log_statement_debug"]
