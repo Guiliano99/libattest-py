@@ -40,6 +40,11 @@ from libattest.formats.key_attest_pop import (
     KeyAttestResp,
     resolve_key_attest_evidence_oid,
 )
+from libattest.formats.nxp.oid import (
+    resolve_ele_dev_attest_oid,
+    resolve_ele_key_attest_oid,
+    resolve_se05x_attest_oid,
+)
 from libattest.formats.tpm import (
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
@@ -68,6 +73,12 @@ ATTESTATION_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     resolve_evidence_enc_oid(): univ.OctetString,
     resolve_cose_evidence_enc_oid(): CMW,
     str(ID_PE_CMW): CMW,
+    # NXP EdgeLock families: opaque OCTET STRING payloads (LE C struct /
+    # EdgeLock 2GO-TLV / SE05x attested-read TLV).  The inner bytes are
+    # parsed by libattest.formats.nxp, NOT by ASN.1 (see formats/nxp/).
+    resolve_ele_dev_attest_oid(): univ.OctetString,
+    resolve_ele_key_attest_oid(): univ.OctetString,
+    resolve_se05x_attest_oid(): univ.OctetString,
     # The same syntax is also valid when a caller carries the EAR value as an
     # OID-selected opaque statement rather than as an X.509 extension.
     str(id_ear_extension): EARExtension,
@@ -147,6 +158,10 @@ _STMT_OID_BY_NAME: dict[str, str] = {
     "jose-hpke-evidence": resolve_evidence_enc_oid(),
     "cose-hpke-evidence": resolve_cose_evidence_enc_oid(),
     "tcg-attest-quote": str(id_tcg_attest_quote),
+    # NXP EdgeLock families (opaque OCTET STRING statements).
+    "nxp-ele-dev-attest": resolve_ele_dev_attest_oid(),
+    "nxp-ele-key-attest": resolve_ele_key_attest_oid(),
+    "nxp-se05x-attest": resolve_se05x_attest_oid(),
 }
 
 _NONCE_REQUEST_OID_BY_NAME: dict[str, str] = {
