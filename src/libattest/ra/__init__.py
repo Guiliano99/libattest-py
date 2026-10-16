@@ -12,9 +12,11 @@ bytes / OID-strings / verdict objects — never a ``PKIMessage`` — so any carr
 
 Two replaceable seams are first-class (reusing the existing libattest ABCs):
 
-* swap the **verifier** — register a custom
-  :class:`~libattest.verifier.base.AttestationVerifier` via
-  :class:`ServiceRegistry`, or inject one on an :class:`AttestationProfile`;
+* swap the **verifier** — implement the RA-owned
+  :class:`~libattest.ra.ports.EvidenceVerifier` port (or the older
+  :class:`~libattest.verifier.base.AttestationVerifier` ABC, adapted automatically)
+  and register it via :class:`ServiceRegistry`, or inject one on an
+  :class:`AttestationProfile`;
 * swap the **reference-value** service — register a custom
   :class:`~libattest.verifier.reference.VerifierReferenceHandler` the same way.
 
@@ -30,24 +32,55 @@ from libattest.ra.nonce import (
     NonceStore,
     ReplayError,
 )
-from libattest.ra.profile import AttestationProfile, jwt_profile, key_attest_profile, tpm_profile
+from libattest.ra.ports import (
+    AppraisalRequest,
+    EvidenceVerifier,
+    LegacyVerifierPort,
+    as_evidence_verifier,
+)
+from libattest.ra.profile import (
+    AttestationProfile,
+    VerifierProvisioning,
+    hpke_profile,
+    jwt_profile,
+    key_attest_profile,
+    se05x_profile,
+    tpm_profile,
+)
 from libattest.ra.registry import ProfileRegistry, ServiceRegistry
+from libattest.ra.relying_party import (
+    EarAcceptancePolicy,
+    EarDecision,
+    TrustAnchor,
+    load_trust_anchor,
+)
 from libattest.ra.verifier_client import VeraisonVerifierClient
 
 __all__ = [
     "DEFAULT_NONCE_BYTES",
     "DEFAULT_TTL_SECONDS",
+    "AppraisalRequest",
     "AttestationProfile",
     "BadNonceRequest",
     "BundleVerifyOutcome",
+    "EarAcceptancePolicy",
+    "EarDecision",
+    "EvidenceVerifier",
+    "LegacyVerifierPort",
     "NonceState",
     "NonceStore",
     "ProfileRegistry",
     "RemoteAttestationEngine",
     "ReplayError",
     "ServiceRegistry",
+    "TrustAnchor",
+    "VerifierProvisioning",
     "VeraisonVerifierClient",
+    "as_evidence_verifier",
+    "load_trust_anchor",
+    "hpke_profile",
     "jwt_profile",
     "key_attest_profile",
+    "se05x_profile",
     "tpm_profile",
 ]

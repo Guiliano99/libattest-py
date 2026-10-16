@@ -1,0 +1,1227 @@
+diff --git a/SE050Sim/se050-sim/src/apdu.rs b/SE050Sim/se050-sim/src/apdu.rs
+index 0581e01..9a6bc8e 100644
+--- a/SE050Sim/se050-sim/src/apdu.rs
++++ b/SE050Sim/se050-sim/src/apdu.rs
+@@ -175,6 +175,8 @@ pub const INS_CRYPTO: u8 = 0x03;
+ pub const INS_MGMT: u8 = 0x04;
+ pub const INS_PROCESS: u8 = 0x05;
+ pub const INS_IMPORT_EXTERNAL: u8 = 0x06;
++/// INS mask bit that turns a read into an attested read (AN12413 Table 18).
++pub const INS_ATTEST: u8 = 0x20;
+ 
+ // P1 credential types
+ pub const P1_DEFAULT: u8 = 0x00;
+@@ -221,6 +223,7 @@ pub const P2_ID: u8 = 0x36;
+ pub const P2_ENCRYPT_ONESHOT: u8 = 0x37;
+ pub const P2_DECRYPT_ONESHOT: u8 = 0x38;
+ pub const P2_ATTRIBUTES: u8 = 0x3B;
++pub const P2_TIME: u8 = 0x3D; // GetTimestamp
+ pub const P2_PARAM: u8 = 0x40;
+ pub const P2_ENCRYPT_INIT: u8 = 0x42;
+ pub const P2_DECRYPT_INIT: u8 = 0x43;
+diff --git a/SE050Sim/se050-sim/src/bin/tcp_server.rs b/SE050Sim/se050-sim/src/bin/tcp_server.rs
+index fc50b18..5c3668a 100644
+--- a/SE050Sim/se050-sim/src/bin/tcp_server.rs
++++ b/SE050Sim/se050-sim/src/bin/tcp_server.rs
+@@ -30,6 +30,8 @@ use std::net::{TcpListener, TcpStream};
+ use std::sync::{Arc, Mutex};
+ use std::thread;
+ 
++use rand::RngCore;
++use se050_sim::handlers::attest;
+ use se050_sim::object_store::ObjectStore;
+ use se050_sim::t1::T1Responder;
+ 
+@@ -113,6 +115,27 @@ fn main() {
+         .and_then(|s| s.parse().ok())
+         .unwrap_or(DEFAULT_PORT);
+ 
++    // Trust-provision the attestation key and chip unique ID: from
++    // SE050_SIM_ATTEST_SEED when it is set (same seed, same key), otherwise
++    // from OS randomness, a new key every start. Then start the attestation
++    // clock, whose one-second wait belongs here, before the store is shared.
++    let mut store = ObjectStore::new();
++    let seed = match std::env::var("SE050_SIM_ATTEST_SEED").ok().filter(|s| !s.is_empty()) {
++        Some(seed) => {
++            eprintln!("[se050-sim] Attestation key F0000012 derived from SE050_SIM_ATTEST_SEED (deterministic)");
++            seed.into_bytes()
++        }
++        None => {
++            eprintln!("[se050-sim] Attestation key F0000012 random for this start (SE050_SIM_ATTEST_SEED unset)");
++            let mut seed = vec![0u8; 32];
++            rand::rngs::OsRng.fill_bytes(&mut seed);
++            seed
++        }
++    };
++    attest::provision(&mut store, &seed);
++    store.start_attest_clock();
++    let store = Arc::new(Mutex::new(store));
++
+     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).unwrap_or_else(|e| {
+         eprintln!("[se050-sim] Failed to bind port {}: {}", port, e);
+         std::process::exit(1);
+@@ -120,8 +143,6 @@ fn main() {
+ 
+     eprintln!("[se050-sim] Listening on port {}", port);
+ 
+-    let store = Arc::new(Mutex::new(ObjectStore::new()));
+-
+     for stream in listener.incoming() {
+         match stream {
+             Ok(stream) => {
+diff --git a/SE050Sim/se050-sim/src/dispatch.rs b/SE050Sim/se050-sim/src/dispatch.rs
+index 2661110..fe28cca 100644
+--- a/SE050Sim/se050-sim/src/dispatch.rs
++++ b/SE050Sim/se050-sim/src/dispatch.rs
+@@ -49,6 +49,12 @@ pub fn dispatch(apdu: &ParsedApdu, store: &mut ObjectStore, scp_active: bool) ->
+         return ApduResponse::error(SW_INS_NOT_SUPPORTED);
+     }
+ 
++    // Route on the unmasked INS: base_ins() turns INS_READ | INS_ATTEST
++    // into INS_READ, which would answer an attested read as a plain one.
++    if apdu.ins & (0x1F | INS_ATTEST) == INS_READ | INS_ATTEST {
++        return handlers::attest::handle_read_attested(apdu, store, v7);
++    }
++
+     let base_ins = apdu.base_ins();
+     let cred_type = apdu.cred_type();
+ 
+@@ -201,6 +207,7 @@ pub fn dispatch(apdu: &ParsedApdu, store: &mut ObjectStore, scp_active: bool) ->
+                 (_, P2_SCP) => {
+                     handlers::management::handle_set_platform_scp(apdu, store, scp_active)
+                 }
++                (_, P2_TIME) => handlers::attest::handle_get_timestamp(store, v7),
+                 (_, P2_EXIST) | (_, P2_DELETE_OBJECT) => {
+                     handlers::object_mgmt::handle_mgmt(apdu, store)
+                 }
+diff --git a/SE050Sim/se050-sim/src/handlers/aes.rs b/SE050Sim/se050-sim/src/handlers/aes.rs
+index c188faf..9448b05 100644
+--- a/SE050Sim/se050-sim/src/handlers/aes.rs
++++ b/SE050Sim/se050-sim/src/handlers/aes.rs
+@@ -246,7 +246,7 @@ pub fn handle_write_aes_key(apdu: &ParsedApdu, store: &mut ObjectStore) -> ApduR
+     } else {
+         ApduResponse::error(SW_WRONG_DATA)
+     };
+-    if response.sw == SW_NO_ERROR && !object_existed {
++    if response.sw == SW_NO_ERROR {
+         store.set_creation_metadata(
+             obj_id,
+             creation_policy,
+@@ -301,9 +301,7 @@ pub fn handle_write_hmac_key(apdu: &ParsedApdu, store: &mut ObjectStore) -> Apdu
+     match tlv::find_tlv(&tlvs, TAG_3) {
+         Some(t) if !t.value.is_empty() => {
+             store.insert(obj_id, SecureObject::HMACKey { key: t.value.clone(), policy });
+-            if !object_existed {
+-                store.set_creation_metadata(obj_id, creation_policy, 0x01);
+-            }
++            store.set_creation_metadata(obj_id, creation_policy, 0x01);
+             ApduResponse::success()
+         }
+         _ => ApduResponse::error(SW_WRONG_DATA),
+diff --git a/SE050Sim/se050-sim/src/handlers/attest.rs b/SE050Sim/se050-sim/src/handlers/attest.rs
+new file mode 100644
+index 0000000..cf913c4
+--- /dev/null
++++ b/SE050Sim/se050-sim/src/handlers/attest.rs
+@@ -0,0 +1,425 @@
++/* attest.rs
++ *
++ * Copyright (C) 2026 Siemens AG
++ *
++ * This file is part of SE050Sim.
++ *
++ * SE050Sim is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * SE050Sim is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
++ */
++
++//! Applet 7.2 attested ReadObject (INS_READ | INS_ATTEST = 0x22) and
++//! GetTimestamp, plus the trust-provisioned attestation key and chip
++//! unique ID they need.
++//!
++//! Layout follows NXP Plug & Trust v04.08.00:
++//! Se05x_API_ReadObject_W_Attst_V2 (se05x_APDU_impl.h) for the request and
++//! response, nxECKey_VerifyAttestation (fsl_sss_se05x_apis.c) for the
++//! signed data, and AN13254 Rev 1.1 section 3.1. Only the applet 7.2
++//! format exists here; the 3.1.1 personality refuses the attested read
++//! rather than emit the legacy AN12413 Table 106 format, and answers
++//! GetTimestamp like every other personality.
++
++use crate::apdu::*;
++use crate::object_store::types::{ECCurve, SecureObject};
++use crate::object_store::ObjectStore;
++use crate::policy::{POLICY_OBJ_ALLOW_ATTESTATION, POLICY_OBJ_ALLOW_READ};
++use crate::tlv::{self, Tlv, TAG_1, TAG_2, TAG_3, TAG_4, TAG_5, TAG_6, TAG_7, TAG_SIGNATURE, TAG_TIMESTAMP};
++use ecdsa::signature::hazmat::PrehashSigner;
++use sha2::{Digest, Sha256};
++
++/// SSS_SE05X_RESID_ATTESTATION_KEY (fsl_sss_se05x_apis.c).
++pub const ATTEST_KEY_ID: [u8; 4] = [0xF0, 0x00, 0x00, 0x12];
++/// kSE05x_AppletResID_UNIQUE_ID (se05x_enums.h), 18 bytes (se05x_const.h).
++pub const UNIQUE_ID: [u8; 4] = [0x7F, 0xFF, 0x02, 0x06];
++pub const ORIGIN_PROVISIONED: u8 = 0x03;
++
++/// One policy entry: length 8 | authObjectId 0 (any session) | AR header.
++fn policy_entry(ar_header: u32) -> Vec<u8> {
++    let mut entry = vec![8, 0, 0, 0, 0];
++    entry.extend_from_slice(&ar_header.to_be_bytes());
++    entry
++}
++
++/// Trust-provision the P-256 attestation key (policy "Anybody Read and
++/// Attestation" per AN12436: READ | ATTESTATION, no SIGN, no DEC) and the
++/// chip unique ID. Both derive from `seed`: the same seed gives the same
++/// key. tcp_server passes SE050_SIM_ATTEST_SEED when it is set and 32 bytes
++/// of OS randomness otherwise, so by default every start is a new chip
++/// whose key nobody else can derive. A real SE05x attestation key is
++/// individual per die and never leaves it.
++/// Neither policy grants WRITE or DELETE, and DeleteAll keeps objects of
++/// origin ORIGIN_PROVISIONED, so both stay for the life of the store.
++pub fn provision(store: &mut ObjectStore, seed: &[u8]) {
++    let key = (0u8..=255)
++        .find_map(|ctr| {
++            let d = Sha256::new()
++                .chain_update(b"SE050Sim attestation key v1")
++                .chain_update(seed)
++                .chain_update([ctr])
++                .finalize();
++            p256::ecdsa::SigningKey::from_slice(&d).ok()
++        })
++        .expect("SHA-256 output is a valid P-256 scalar with overwhelming probability");
++    store.insert(ATTEST_KEY_ID, SecureObject::ECKeyPair {
++        curve: ECCurve::NistP256,
++        private_key: key.to_bytes().to_vec(),
++        public_key: key.verifying_key().to_encoded_point(false).as_bytes().to_vec(),
++    });
++    store.set_creation_metadata(
++        ATTEST_KEY_ID,
++        Some(policy_entry(POLICY_OBJ_ALLOW_READ | POLICY_OBJ_ALLOW_ATTESTATION)),
++        ORIGIN_PROVISIONED,
++    );
++
++    let chip_id = Sha256::new().chain_update(b"SE050Sim chip id v1").chain_update(seed).finalize();
++    store.insert(UNIQUE_ID, SecureObject::Binary { data: chip_id[..18].to_vec() });
++    store.set_creation_metadata(UNIQUE_ID, Some(policy_entry(POLICY_OBJ_ALLOW_READ)), ORIGIN_PROVISIONED);
++}
++
++/// GetTimestamp (80 04 00 3D): TLV[TAG_1] with the 12-byte timestamp
++/// (AN12413 4.19.2).
++pub fn handle_get_timestamp(store: &mut ObjectStore, _v7: bool) -> ApduResponse {
++    // AN12413 (applets 3.1.0/3.1.1/3.6.0) specifies GetTimestamp, so 3.1.1 answers it too.
++    ApduResponse::success_with_tlvs(&[Tlv::new(TAG_1, &store.attest_timestamp())])
++}
++
++/// The value of the only TLV with `tag`; None if it is absent or repeated.
++fn single(tlvs: &[Tlv], tag: u8) -> Option<&[u8]> {
++    match tlv::find_tlvs(tlvs, tag)[..] {
++        [t] => Some(&t.value),
++        _ => None,
++    }
++}
++
++/// Attested ReadObject, applet 7.2 ("_V2") format.
++///
++/// Request: TAG_1 objId, [TAG_2 offset, TAG_3 length], TAG_5 attestation
++/// key id, TAG_6 AttestationAlgo, TAG_7 16-byte freshness.
++/// Response: [TAG_1 value] TAG_2 chip id, TAG_3 attributes, TAG_4 size,
++/// 0x4F timestamp, 0x52 DER signature over
++/// H(H(cmd) || the five TLVs with 0x82 hi lo lengths), where cmd is the
++/// plain command without Le, rebuilt with an extended Lc. The five TLVs go
++/// out in that same 0x82 form, so the wire bytes are the signed bytes.
++pub fn handle_read_attested(apdu: &ParsedApdu, store: &mut ObjectStore, v7: bool) -> ApduResponse {
++    if !v7 {
++        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++    }
++    // ponytail: ReadObject only. Attested ReadObjectAttributes (P2 0x3B) and
++    // ReadRSA_W_Attst (TAG_4) are refused, never answered unattested.
++    if apdu.p1 != P1_DEFAULT || apdu.p2 != P2_DEFAULT {
++        return ApduResponse::error(SW_WRONG_P1P2);
++    }
++    let Ok(tlvs) = apdu.parse_tlvs() else {
++        return ApduResponse::error(SW_WRONG_DATA);
++    };
++    let id = |tag| single(&tlvs, tag).and_then(|v| <[u8; 4]>::try_from(v).ok());
++    let (Some(obj_id), Some(att_id), Some(&[algo]), Some(fresh)) =
++        (id(TAG_1), id(TAG_5), single(&tlvs, TAG_6), single(&tlvs, TAG_7))
++    else {
++        return ApduResponse::error(SW_WRONG_DATA);
++    };
++    // AN12413 3.2.7.2: a 16-byte freshness; wolfSSL accepts only 16.
++    // Only the ReadObject_W_Attst_V2 tags, each at most once (this also
++    // refuses TAG_4, ReadRSA_W_Attst).
++    let allowed = [TAG_1, TAG_2, TAG_3, TAG_5, TAG_6, TAG_7];
++    if fresh.len() != 16
++        || tlvs.iter().enumerate().any(|(i, t)| {
++            !allowed.contains(&t.tag) || tlvs[..i].iter().any(|u| u.tag == t.tag)
++        })
++    {
++        return ApduResponse::error(SW_WRONG_DATA);
++    }
++
++    let Some(target) = store.get(&obj_id).cloned() else {
++        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++    };
++    // ponytail: P-256 attestation keys only.
++    let Some(SecureObject::ECKeyPair { curve: ECCurve::NistP256, private_key, .. }) =
++        store.get(&att_id).cloned()
++    else {
++        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++    };
++    // The applet default policy excludes ALLOW_ATTESTATION (AN12413
++    // Table 13), so it must be granted explicitly; policy_allows() would
++    // say yes for a key without a policy.
++    let may_attest = store
++        .metadata(&att_id)
++        .and_then(|m| m.policy.as_deref())
++        .and_then(crate::policy::ar_header_union)
++        .is_some_and(|h| {
++            h & POLICY_OBJ_ALLOW_ATTESTATION != 0 && h & crate::policy::POLICY_OBJ_FORBID_ALL == 0
++        });
++    if !may_attest {
++        return ApduResponse::error(SW_SECURITY_STATUS); // AN12413 3.2.7.2
++    }
++    // ECSignatureAlgo -> digest mode; SHA-224..512 as in AN13254 Table 2.
++    let mode = match algo {
++        0x25 => 0x07,
++        0x21 => 0x04,
++        0x22 => 0x05,
++        0x26 => 0x06,
++        _ => return ApduResponse::error(SW_WRONG_DATA),
++    };
++
++    // TAG_1 is whatever a plain ReadObject returns (READ policy, offset
++    // and length, symmetric keys never exported). A value the policy
++    // refuses is left out and the rest is still signed (P&T
++    // se05x_APDU_impl.h: "Keys with no read policy will not return TAG1";
++    // AN13254 p.7: attributes are always signed and returned).
++    let plain = super::object_mgmt::handle_read_object(apdu, store);
++    let value = match plain.sw {
++        SW_NO_ERROR => tlv::parse_tlvs(&plain.data).ok().and_then(|t| t.into_iter().next()).map(|t| t.value),
++        SW_COMMAND_NOT_ALLOWED => None,
++        sw => return ApduResponse::error(sw),
++    };
++    let Some(SecureObject::Binary { data: chip_id }) = store.get(&UNIQUE_ID).cloned() else {
++        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++    };
++    let attributes = super::object_mgmt::object_attributes(store, &obj_id, &target);
++    let size = (target.data_size() as u16).to_be_bytes();
++    let timestamp = store.attest_timestamp();
++
++    let n = apdu.data.len();
++    let mut cmd = vec![apdu.cla & !0x04, apdu.ins, apdu.p1, apdu.p2, 0x00, (n >> 8) as u8, n as u8];
++    cmd.extend_from_slice(&apdu.data);
++
++    let fields = [
++        (TAG_2, &chip_id[..]),
++        (TAG_3, &attributes[..]),
++        (TAG_4, &size[..]),
++        (TAG_TIMESTAMP, &timestamp[..]),
++    ];
++    let mut body = Vec::new();
++    for (tag, v) in value.iter().map(|v| (TAG_1, &v[..])).chain(fields) {
++        body.extend_from_slice(&[tag, 0x82, (v.len() >> 8) as u8, v.len() as u8]);
++        body.extend_from_slice(v);
++    }
++    let hash = |d: &[u8]| super::digest::compute_hash(mode, d).expect("mode is one of the four above");
++    let mut signed = hash(&cmd);
++    signed.extend_from_slice(&body);
++
++    let Ok(key) = p256::ecdsa::SigningKey::from_slice(&private_key) else {
++        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++    };
++    let sig: Result<p256::ecdsa::Signature, _> = key.sign_prehash(&hash(&signed));
++    let Ok(sig) = sig else {
++        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++    };
++    body.extend_from_slice(&Tlv::new(TAG_SIGNATURE, sig.to_der().as_bytes()).encode());
++    ApduResponse::success_with_data(body)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::applet::AppletVersion;
++    use crate::handlers::{ec, object_mgmt};
++    use crate::policy::{POLICY_OBJ_ALLOW_DELETE, POLICY_OBJ_ALLOW_SIGN};
++    use crate::tlv::TAG_POLICY;
++    use ecdsa::signature::hazmat::PrehashVerifier;
++    use sha2::Sha384;
++
++    const KEY: [u8; 4] = [0x10, 0xAA, 0x00, 0x02];
++
++    fn apdu(ins: u8, p1: u8, p2: u8, data: Vec<u8>) -> ParsedApdu {
++        ParsedApdu { cla: 0x80, ins, p1, p2, data, le: None }
++    }
++
++    fn attested(obj: [u8; 4], key: [u8; 4], algo: u8, fresh: &[u8]) -> ParsedApdu {
++        let mut d = vec![TAG_1, 4];
++        d.extend_from_slice(&obj);
++        d.extend_from_slice(&[TAG_5, 4]);
++        d.extend_from_slice(&key);
++        d.extend_from_slice(&[TAG_6, 1, algo, TAG_7, fresh.len() as u8]);
++        d.extend_from_slice(fresh);
++        apdu(INS_READ | INS_ATTEST, P1_DEFAULT, P2_DEFAULT, d)
++    }
++
++    /// A provisioned store plus a P-256 key generated inside it at KEY.
++    fn store_with_key(policy: Option<u32>) -> ObjectStore {
++        let mut store = ObjectStore::new();
++        provision(&mut store, b"unit-test-seed");
++        let mut d = vec![];
++        if let Some(h) = policy {
++            d.extend_from_slice(&[TAG_POLICY, 9]);
++            d.extend_from_slice(&policy_entry(h));
++        }
++        d.extend_from_slice(&[TAG_1, 4]);
++        d.extend_from_slice(&KEY);
++        d.extend_from_slice(&[TAG_2, 1, 0x03]); // NIST P-256
++        let keygen = apdu(INS_WRITE, P1_EC | P1_KEY_PAIR, P2_DEFAULT, d);
++        assert_eq!(ec::handle_write_ec_key(&keygen, &mut store, AppletVersion::V7_2_0).sw, SW_NO_ERROR);
++        store
++    }
++
++    fn public_key(store: &ObjectStore, id: &[u8; 4]) -> Vec<u8> {
++        match store.get(id) {
++            Some(SecureObject::ECKeyPair { public_key, .. }) => public_key.clone(),
++            _ => panic!("no EC key pair"),
++        }
++    }
++
++    fn chip_id(store: &ObjectStore) -> Vec<u8> {
++        match store.get(&UNIQUE_ID) {
++            Some(SecureObject::Binary { data }) => data.clone(),
++            _ => panic!("no chip id"),
++        }
++    }
++
++    /// Verifier side, written apart from the handler: rebuild
++    /// H(cmd) || TLVs with 0x82 lengths and check the DER signature.
++    /// Returns the signed TLVs.
++    fn verify(store: &ObjectStore, req: &ParsedApdu, body: &[u8], algo: u8) -> Vec<Tlv> {
++        let mut tlvs = tlv::parse_tlvs(body).unwrap();
++        let sig = tlvs.pop().unwrap();
++        assert_eq!(sig.tag, TAG_SIGNATURE);
++        let mut cmd = vec![0x80, 0x22, 0x00, 0x00, 0x00, 0x00, req.data.len() as u8];
++        cmd.extend_from_slice(&req.data);
++        let hash = |d: &[u8]| match algo {
++            0x21 => Sha256::digest(d).to_vec(),
++            0x22 => Sha384::digest(d).to_vec(),
++            _ => unreachable!(),
++        };
++        let mut m = hash(&cmd);
++        for t in &tlvs {
++            m.extend_from_slice(&[t.tag, 0x82, 0x00, t.value.len() as u8]);
++            m.extend_from_slice(&t.value);
++        }
++        let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&public_key(store, &ATTEST_KEY_ID)).unwrap();
++        let sig = p256::ecdsa::Signature::from_der(&sig.value).unwrap();
++        vk.verify_prehash(&hash(&m), &sig).expect("attestation signature verifies");
++        tlvs
++    }
++
++    #[test]
++    fn test_attested_read_signature_verifies() {
++        let mut store = store_with_key(None);
++        for algo in [0x21, 0x22] {
++            let req = attested(KEY, ATTEST_KEY_ID, algo, &[0xA5; 16]);
++            let resp = handle_read_attested(&req, &mut store, true);
++            assert_eq!(resp.sw, SW_NO_ERROR);
++            assert_eq!(resp.data[1], 0x82, "signed TLVs go out in the 0x82 form");
++            let tlvs = verify(&store, &req, &resp.data, algo);
++            let tags: Vec<u8> = tlvs.iter().map(|t| t.tag).collect();
++            assert_eq!(tags, [TAG_1, TAG_2, TAG_3, TAG_4, TAG_TIMESTAMP]);
++            assert_eq!(tlvs[0].value, public_key(&store, &KEY));
++            assert_eq!(tlvs[1].value, chip_id(&store));
++            let attrs = &tlvs[2].value;
++            assert_eq!(attrs, &object_mgmt::object_attributes(&store, &KEY, store.get(&KEY).unwrap()));
++            assert_eq!(&attrs[..5], &[0x10, 0xAA, 0x00, 0x02, 0x29]);
++            assert_eq!(attrs[14], 0x02, "no policy, then origin INTERNAL");
++            assert_eq!(tlvs[3].value, [0x00, 0x20]);
++            assert_eq!(tlvs[4].value.len(), 12);
++        }
++    }
++
++    #[test]
++    fn test_policy_and_request_refusals() {
++        let mut store = store_with_key(None);
++        // A key without an explicit ALLOW_ATTESTATION (here: no policy) cannot attest.
++        let resp = handle_read_attested(&attested(KEY, KEY, 0x21, &[1; 16]), &mut store, true);
++        assert_eq!(resp.sw, SW_SECURITY_STATUS);
++
++        // The attestation key cannot sign host data (no ALLOW_SIGN) ...
++        let mut d = vec![TAG_1, 4];
++        d.extend_from_slice(&ATTEST_KEY_ID);
++        d.extend_from_slice(&[TAG_2, 1, 0x21, TAG_3, 32]);
++        d.extend_from_slice(&[0x55; 32]);
++        let sign = apdu(INS_CRYPTO, P1_SIGNATURE, P2_SIGN, d.clone());
++        assert_eq!(ec::handle_sign(&sign, &mut store).sw, SW_COMMAND_NOT_ALLOWED);
++        // ... while a key without a policy still signs.
++        d[2..6].copy_from_slice(&KEY);
++        let sign = apdu(INS_CRYPTO, P1_SIGNATURE, P2_SIGN, d);
++        assert_eq!(ec::handle_sign(&sign, &mut store).sw, SW_NO_ERROR);
++
++        for fresh in [&[0u8; 15][..], &[0u8; 17][..]] {
++            let req = attested(KEY, ATTEST_KEY_ID, 0x21, fresh);
++            assert_eq!(handle_read_attested(&req, &mut store, true).sw, SW_WRONG_DATA);
++        }
++        let req = attested(KEY, ATTEST_KEY_ID, 0x11, &[0; 16]); // SHA-1
++        assert_eq!(handle_read_attested(&req, &mut store, true).sw, SW_WRONG_DATA);
++        let mut req = attested(KEY, ATTEST_KEY_ID, 0x21, &[0; 16]);
++        req.p2 = P2_ATTRIBUTES; // attested ReadObjectAttributes: refused, not downgraded
++        assert_eq!(handle_read_attested(&req, &mut store, true).sw, SW_WRONG_P1P2);
++    }
++
++    #[test]
++    fn test_timestamp_monotonic() {
++        let mut store = store_with_key(None);
++        let get = |store: &mut ObjectStore| {
++            let resp = handle_get_timestamp(store, true);
++            assert_eq!(resp.sw, SW_NO_ERROR);
++            tlv::parse_tlvs(&resp.data).unwrap().remove(0).value
++        };
++        let t1 = get(&mut store);
++        let t2 = get(&mut store);
++        let resp = handle_read_attested(&attested(KEY, ATTEST_KEY_ID, 0x21, &[2; 16]), &mut store, true);
++        let t3 = tlv::find_tlv(&tlv::parse_tlvs(&resp.data).unwrap(), TAG_TIMESTAMP).unwrap().value.clone();
++        assert_eq!(t1.len(), 12);
++        // Equal-length big-endian byte strings compare like the numbers.
++        assert!(t1 < t2 && t2 < t3, "{t1:02x?} {t2:02x?} {t3:02x?}");
++        assert_eq!(t1[..4], t3[..4], "persistent part fixed within one power cycle");
++    }
++
++    #[test]
++    fn test_provisioned_objects_survive_delete_all_and_refuse_changes() {
++        let mut store = store_with_key(None);
++        let (key, chip) = (public_key(&store, &ATTEST_KEY_ID), chip_id(&store));
++        assert_eq!(chip.len(), 18);
++        let mut again = ObjectStore::new();
++        provision(&mut again, b"unit-test-seed");
++        assert_eq!(public_key(&again, &ATTEST_KEY_ID), key, "same seed, same key");
++        let mut other = ObjectStore::new();
++        provision(&mut other, b"other-seed");
++        assert_ne!(public_key(&other, &ATTEST_KEY_ID), key);
++
++        for id in [ATTEST_KEY_ID, UNIQUE_ID] {
++            let mut d = vec![TAG_1, 4];
++            d.extend_from_slice(&id);
++            let delete = apdu(INS_MGMT, P1_DEFAULT, P2_DELETE_OBJECT, d);
++            assert_eq!(object_mgmt::handle_mgmt(&delete, &mut store).sw, SW_CONDITIONS_NOT_SATISFIED);
++        }
++        let mut d = vec![TAG_1, 4];
++        d.extend_from_slice(&UNIQUE_ID);
++        d.extend_from_slice(&[TAG_4, 1, 0xFF]);
++        let write = apdu(INS_WRITE, P1_BINARY, P2_DEFAULT, d);
++        assert_eq!(object_mgmt::handle_write(&write, &mut store).sw, SW_CONDITIONS_NOT_SATISFIED);
++
++        store.clear(); // DeleteAll
++        assert_eq!(public_key(&store, &ATTEST_KEY_ID), key);
++        assert_eq!(chip_id(&store), chip);
++        assert_eq!(store.metadata(&ATTEST_KEY_ID).unwrap().origin, ORIGIN_PROVISIONED);
++        assert!(!store.exists(&KEY));
++    }
++
++    #[test]
++    fn test_v311_refuses_attested_read_but_answers_timestamp() {
++        let mut store = store_with_key(None);
++        let req = attested(KEY, ATTEST_KEY_ID, 0x21, &[3; 16]);
++        assert_eq!(handle_read_attested(&req, &mut store, false).sw, SW_CONDITIONS_NOT_SATISFIED);
++        // AN12413 (applets 3.x) specifies GetTimestamp too.
++        assert_eq!(handle_get_timestamp(&mut store, false).sw, SW_NO_ERROR);
++    }
++
++    #[test]
++    fn test_tag1_omitted_when_target_lacks_allow_read() {
++        let mut store = store_with_key(Some(POLICY_OBJ_ALLOW_SIGN | POLICY_OBJ_ALLOW_DELETE));
++        let req = attested(KEY, ATTEST_KEY_ID, 0x21, &[4; 16]);
++        let resp = handle_read_attested(&req, &mut store, true);
++        assert_eq!(resp.sw, SW_NO_ERROR);
++        let tags: Vec<u8> = verify(&store, &req, &resp.data, 0x21).iter().map(|t| t.tag).collect();
++        assert_eq!(tags, [TAG_2, TAG_3, TAG_4, TAG_TIMESTAMP]);
++    }
++}
+diff --git a/SE050Sim/se050-sim/src/handlers/digest.rs b/SE050Sim/se050-sim/src/handlers/digest.rs
+index 8227a21..e53b5b0 100644
+--- a/SE050Sim/se050-sim/src/handlers/digest.rs
++++ b/SE050Sim/se050-sim/src/handlers/digest.rs
+@@ -24,7 +24,7 @@ use crate::object_store::{CryptoObjectState, ObjectStore};
+ use crate::tlv::{self, Tlv, TAG_1, TAG_2, TAG_3};
+ use sha2::Digest;
+ 
+-fn compute_hash(mode: u8, data: &[u8]) -> Option<Vec<u8>> {
++pub(crate) fn compute_hash(mode: u8, data: &[u8]) -> Option<Vec<u8>> {
+     match mode {
+         0x01 => Some(sha1::Sha1::digest(data).to_vec()),
+         0x07 => Some(sha2::Sha224::digest(data).to_vec()),
+diff --git a/SE050Sim/se050-sim/src/handlers/ec.rs b/SE050Sim/se050-sim/src/handlers/ec.rs
+index bff0a7d..f960e76 100644
+--- a/SE050Sim/se050-sim/src/handlers/ec.rs
++++ b/SE050Sim/se050-sim/src/handlers/ec.rs
+@@ -141,7 +141,7 @@ pub fn handle_write_ec_key(
+     } else {
+         ApduResponse::error(SW_WRONG_DATA)
+     };
+-    if response.sw == SW_NO_ERROR && !object_existed {
++    if response.sw == SW_NO_ERROR {
+         store.set_creation_metadata(
+             obj_id,
+             creation_policy,
+@@ -502,6 +502,13 @@ pub fn handle_sign(apdu: &ParsedApdu, store: &mut ObjectStore) -> ApduResponse {
+         // on 3.1.1 and 7.2.0), not 0x6A82.
+         None => return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED),
+     };
++    // An attached policy without POLICY_OBJ_ALLOW_SIGN forbids signing.
++    // This keeps the attestation key (READ | ATTESTATION only, AN13254
++    // Table 1) from signing host-chosen data. 0x6986 = access denied by
++    // object policy (AN12413 Table 15).
++    if !store.policy_allows(&key_id, crate::policy::POLICY_OBJ_ALLOW_SIGN) {
++        return ApduResponse::error(SW_COMMAND_NOT_ALLOWED);
++    }
+ 
+     // Weierstrass ECDSA enforces input length == algo digest length.
+     if let SecureObject::ECKeyPair { curve, .. } = &key_obj {
+@@ -750,6 +757,11 @@ pub fn handle_ecdh(apdu: &ParsedApdu, store: &mut ObjectStore, strict: bool) ->
+         Some(obj) => obj.clone(),
+         None => return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED),
+     };
++    // ECDH needs POLICY_OBJ_ALLOW_KA (AN12413 Table 282); this keeps the
++    // attestation key from serving as a Diffie-Hellman oracle.
++    if !store.policy_allows(&key_id, crate::policy::POLICY_OBJ_ALLOW_KA) {
++        return ApduResponse::error(SW_COMMAND_NOT_ALLOWED);
++    }
+ 
+     // On the real applet the Tag7 target must already exist as an HMACKey
+     // object; the applet refuses to create it implicitly. In lenient mode a
+@@ -819,7 +831,14 @@ pub fn handle_ecdh(apdu: &ParsedApdu, store: &mut ObjectStore, strict: bool) ->
+                 }
+                 None => {
+                     // Legacy lenient behavior: implicitly create the target
+-                    // as a Binary object.
++                    // as a Binary object. An existing object is only
++                    // replaced if its policy allows writing (this protects
++                    // the trust-provisioned objects).
++                    if store.exists(&oid)
++                        && !store.policy_allows(&oid, crate::policy::POLICY_OBJ_ALLOW_WRITE)
++                    {
++                        return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
++                    }
+                     store.insert(oid, SecureObject::Binary { data: secret });
+                 }
+             }
+diff --git a/SE050Sim/se050-sim/src/handlers/mod.rs b/SE050Sim/se050-sim/src/handlers/mod.rs
+index 5671c1d..28cd321 100644
+--- a/SE050Sim/se050-sim/src/handlers/mod.rs
++++ b/SE050Sim/se050-sim/src/handlers/mod.rs
+@@ -29,3 +29,4 @@ pub mod rsa;
+ pub mod aes;
+ pub mod digest;
+ pub mod mac;
++pub mod attest;
+diff --git a/SE050Sim/se050-sim/src/handlers/object_mgmt.rs b/SE050Sim/se050-sim/src/handlers/object_mgmt.rs
+index 8ffb5d3..3196b86 100644
+--- a/SE050Sim/se050-sim/src/handlers/object_mgmt.rs
++++ b/SE050Sim/se050-sim/src/handlers/object_mgmt.rs
+@@ -232,7 +232,7 @@ fn handle_write_counter(apdu: &ParsedApdu, store: &mut ObjectStore) -> ApduRespo
+     }
+ }
+ 
+-fn handle_read_object(apdu: &ParsedApdu, store: &mut ObjectStore) -> ApduResponse {
++pub(crate) fn handle_read_object(apdu: &ParsedApdu, store: &mut ObjectStore) -> ApduResponse {
+     let tlvs = match apdu.parse_tlvs() {
+         Ok(t) => t,
+         Err(_) => return ApduResponse::error(SW_WRONG_DATA),
+@@ -436,15 +436,25 @@ fn handle_read_attributes(
+     let Some(object) = store.get(&obj_id) else {
+         return ApduResponse::error(SW_CONDITIONS_NOT_SATISFIED);
+     };
++    let attributes = object_attributes(store, &obj_id, object);
++    ApduResponse::success_with_tlvs(&[Tlv::new(TAG_3, &attributes)])
++}
+ 
++/// The applet 7.2 attribute bytes of one object. Also TAG_3 of the
++/// attested read, which must match ReadObjectAttributes byte for byte.
++pub(crate) fn object_attributes(
++    store: &ObjectStore,
++    obj_id: &[u8; 4],
++    object: &SecureObject,
++) -> Vec<u8> {
+     let mut attributes = Vec::new();
+-    attributes.extend_from_slice(&obj_id);
++    attributes.extend_from_slice(obj_id);
+     attributes.push(object.type_code(true));
+     attributes.push(0x01); // kSE05x_SetIndicator_NOT_SET
+     attributes.extend_from_slice(&[0x00, 0x00]); // minimum AEAD tag length
+     attributes.extend_from_slice(&[0x00; 4]); // owner: unauthenticated session
+     attributes.extend_from_slice(&[0x00, 0x00]); // RFU
+-    if let Some(metadata) = store.metadata(&obj_id) {
++    if let Some(metadata) = store.metadata(obj_id) {
+         if let Some(policy) = &metadata.policy {
+             attributes.extend_from_slice(policy);
+         }
+@@ -453,8 +463,7 @@ fn handle_read_attributes(
+         attributes.push(0x01); // legacy store: treat as externally created
+     }
+     attributes.extend_from_slice(&[0x00; 4]); // object version
+-
+-    ApduResponse::success_with_tlvs(&[Tlv::new(TAG_3, &attributes)])
++    attributes
+ }
+ 
+ fn handle_check_exists(apdu: &ParsedApdu, store: &mut ObjectStore) -> ApduResponse {
+diff --git a/SE050Sim/se050-sim/src/handlers/rsa.rs b/SE050Sim/se050-sim/src/handlers/rsa.rs
+index 6934600..5432db3 100644
+--- a/SE050Sim/se050-sim/src/handlers/rsa.rs
++++ b/SE050Sim/se050-sim/src/handlers/rsa.rs
+@@ -196,9 +196,7 @@ pub fn handle_write_rsa_key(
+                 staged: RsaComponents::default(),
+             },
+         );
+-        if !object_existed {
+-            store.set_creation_metadata(obj_id, creation_policy, 0x02);
+-        }
++        store.set_creation_metadata(obj_id, creation_policy, 0x02);
+         return ApduResponse::success();
+     }
+ 
+@@ -236,9 +234,7 @@ pub fn handle_write_rsa_key(
+             staged,
+         },
+     );
+-    if !object_existed {
+-        store.set_creation_metadata(obj_id, creation_policy, 0x01);
+-    }
++    store.set_creation_metadata(obj_id, creation_policy, 0x01);
+     ApduResponse::success()
+ }
+ 
+diff --git a/SE050Sim/se050-sim/src/object_store/mod.rs b/SE050Sim/se050-sim/src/object_store/mod.rs
+index 4c53ac8..2af81d8 100644
+--- a/SE050Sim/se050-sim/src/object_store/mod.rs
++++ b/SE050Sim/se050-sim/src/object_store/mod.rs
+@@ -84,6 +84,9 @@ pub struct ObjectStore {
+     /// defaults (or environment overrides). Factory reset deliberately does
+     /// not restore these keys, matching the irrecoverable real-card behavior.
+     platform_scp: Option<Scp03Config>,
++    /// Attestation timestamp state (persistent part, clock origin, last
++    /// transient tick), started on first use; see attest_timestamp.
++    attest_ts: Option<(u32, std::time::Instant, u64)>,
+ }
+ 
+ fn default_curves() -> HashMap<u8, u8> {
+@@ -91,6 +94,10 @@ fn default_curves() -> HashMap<u8, u8> {
+     (0x01..=0x05).map(|id| (id, CURVE_PARAMS_COMPLETE)).collect()
+ }
+ 
++fn unix_time() -> std::time::Duration {
++    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
++}
++
+ impl ObjectStore {
+     pub fn new() -> Self {
+         Self {
+@@ -102,6 +109,7 @@ impl ObjectStore {
+             crypto_object_types: HashMap::new(),
+             scp_required: false,
+             platform_scp: None,
++            attest_ts: None,
+         }
+     }
+ 
+@@ -115,6 +123,7 @@ impl ObjectStore {
+             crypto_object_types: HashMap::new(),
+             scp_required: false,
+             platform_scp: None,
++            attest_ts: None,
+         };
+         store.load();
+         store
+@@ -133,8 +142,8 @@ impl ObjectStore {
+         self.objects.get_mut(id)
+     }
+ 
+-    /// Record immutable object metadata on first creation. Repeated RSA
+-    /// component writes and ordinary overwrites cannot replace the policy.
++    /// Record object metadata. The policy is fixed at first creation;
++    /// the origin follows the latest key value (AN12413 Table 4).
+     pub fn set_creation_metadata(
+         &mut self,
+         id: [u8; 4],
+@@ -143,6 +152,7 @@ impl ObjectStore {
+     ) {
+         self.metadata
+             .entry(id)
++            .and_modify(|m| m.origin = origin)
+             .or_insert(ObjectMetadata { policy, origin });
+         self.persist();
+     }
+@@ -184,8 +194,12 @@ impl ObjectStore {
+         // crypto objects. The simulator re-provisions its default
+         // curve set afterwards (see ec_curves) so key generation keeps
+         // working for hosts that never create curves themselves.
+-        self.objects.clear();
+-        self.metadata.clear();
++        // Trust-provisioned objects (origin ORIGIN_PROVISIONED 0x03, e.g.
++        // the attestation key and the chip unique ID) survive DeleteAll
++        // (AN12413 4.19.5).
++        self.metadata.retain(|_, m| m.origin == 0x03);
++        let keep = &self.metadata;
++        self.objects.retain(|id, _| keep.contains_key(id));
+         self.ec_curves = default_curves();
+         self.crypto_objects.clear();
+         self.crypto_object_types.clear();
+@@ -196,6 +210,39 @@ impl ObjectStore {
+         self.objects.len()
+     }
+ 
++    /// Start the attestation clock in a fresh second: wait for the next whole
++    /// second and use it as the persistent part of attest_timestamp, so it
++    /// exceeds any earlier run's however soon the restart (unless the clock
++    /// steps back). Call it once at start-up, before the store is shared:
++    /// the wait takes up to 1 s and would stall every connection behind the
++    /// store lock.
++    pub fn start_attest_clock(&mut self) {
++        let now = unix_time();
++        std::thread::sleep(std::time::Duration::from_nanos(1_000_000_000 - now.subsec_nanos() as u64));
++        self.attest_ts = Some((now.as_secs() as u32 + 1, std::time::Instant::now(), 0));
++    }
++
++    /// Attestation timestamp (AN12413 3.9): 12 bytes, the most significant
++    /// 4 persistent, the least significant 8 transient and advancing at
++    /// least every 100 ms. Shared by every connection of this store.
++    pub fn attest_timestamp(&mut self) -> [u8; 12] {
++        // ponytail: the persistent part is the UNIX time in seconds instead
++        // of an NVM counter, so it still grows across restarts without a
++        // store file. The transient part counts 100 ms ticks and is forced
++        // strictly increasing; a real chip may repeat a value within 100 ms.
++        // A store whose clock was not started (library use, unit tests)
++        // starts it here without the wait: still strictly increasing within
++        // a run and across restarts more than 1 s apart.
++        let (persistent, t0, last) = self
++            .attest_ts
++            .get_or_insert_with(|| (unix_time().as_secs() as u32, std::time::Instant::now(), 0));
++        *last = (t0.elapsed().as_millis() as u64 / 100).max(*last + 1);
++        let mut ts = [0u8; 12];
++        ts[..4].copy_from_slice(&persistent.to_be_bytes());
++        ts[4..].copy_from_slice(&last.to_be_bytes());
++        ts
++    }
++
+     // ---- EC curve object state ----
+ 
+     /// Curve exists (parameterized or not). A created but param-less
+diff --git a/SE050Sim/se050-sim/src/policy.rs b/SE050Sim/se050-sim/src/policy.rs
+index 291d973..c7a527e 100644
+--- a/SE050Sim/se050-sim/src/policy.rs
++++ b/SE050Sim/se050-sim/src/policy.rs
+@@ -33,6 +33,10 @@
+ pub const POLICY_OBJ_ALLOW_READ: u32 = 0x0020_0000;
+ pub const POLICY_OBJ_ALLOW_WRITE: u32 = 0x0010_0000;
+ pub const POLICY_OBJ_ALLOW_DELETE: u32 = 0x0004_0000;
++pub const POLICY_OBJ_ALLOW_SIGN: u32 = 0x1000_0000;
++pub const POLICY_OBJ_ALLOW_ATTESTATION: u32 = 0x0000_8000;
++pub const POLICY_OBJ_ALLOW_KA: u32 = 0x0400_0000;
++pub const POLICY_OBJ_FORBID_ALL: u32 = 0x2000_0000;
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct InvalidPolicy;
+diff --git a/SE050Sim/se050-sim/src/tlv.rs b/SE050Sim/se050-sim/src/tlv.rs
+index 822108e..1674e4d 100644
+--- a/SE050Sim/se050-sim/src/tlv.rs
++++ b/SE050Sim/se050-sim/src/tlv.rs
+@@ -122,6 +122,8 @@ pub const TAG_7: u8 = 0x47;
+ pub const TAG_8: u8 = 0x48;
+ pub const TAG_9: u8 = 0x49;
+ pub const TAG_10: u8 = 0x4a;
++pub const TAG_TIMESTAMP: u8 = 0x4F;
++pub const TAG_SIGNATURE: u8 = 0x52;
+ 
+ #[cfg(test)]
+ mod tests {
+diff --git a/SE050Sim/se050-sim/tests/attestation.rs b/SE050Sim/se050-sim/tests/attestation.rs
+new file mode 100644
+index 0000000..a01d37a
+--- /dev/null
++++ b/SE050Sim/se050-sim/tests/attestation.rs
+@@ -0,0 +1,373 @@
++/* attestation.rs
++ *
++ * Copyright (C) 2026 Siemens AG
++ *
++ * This file is part of SE050Sim.
++ *
++ * SE050Sim is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * SE050Sim is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
++ */
++
++//! End-to-end tests of the applet 7.2 attested read, driven through
++//! `T1Responder::process_frame` over a provisioned store the way tcp_server
++//! serves it: plain, T=1 chained and inside Platform SCP03. Besides the
++//! signed command they cover origin tracking, the ECDH and FORBID_ALL policy
++//! checks, the strict request tags, INS routing and timestamp monotonicity
++//! across a restart. The signature check is written apart from the handler.
++//! Run with `--test-threads=1` like the rest of the suite: the applet
++//! personality and the SCP03 keys come from process env vars.
++
++use std::time::{Duration, Instant};
++
++use p256::ecdsa::signature::hazmat::PrehashVerifier;
++use p256::ecdsa::{Signature, VerifyingKey};
++use p256::elliptic_curve::sec1::ToEncodedPoint;
++use se050_sim::applet::AppletVersion;
++use se050_sim::handlers::attest::{self, ATTEST_KEY_ID, UNIQUE_ID};
++use se050_sim::object_store::types::SecureObject;
++use se050_sim::object_store::ObjectStore;
++use se050_sim::scp03::crypto;
++use se050_sim::scp03::keys::Scp03Config;
++use se050_sim::t1::{crc16_x25, T1Responder};
++use sha2::{Digest, Sha256};
++
++const KEY: [u8; 4] = [0x10, 0xAA, 0x00, 0x02];
++const KEY2: [u8; 4] = [0x10, 0xAA, 0x00, 0x03];
++const POLICY_FORBID_ALL: u32 = 0x2000_0000;
++const POLICY_ALLOW_ATTESTATION: u32 = 0x0000_8000;
++
++/// A T=1 host over one provisioned store (framing as in tests/scp03.rs).
++struct T1Host {
++    t1: T1Responder,
++    store: ObjectStore,
++    seq: u8,
++}
++
++impl T1Host {
++    fn new() -> Self {
++        let mut store = ObjectStore::new();
++        attest::provision(&mut store, b"attestation-test-seed");
++        Self { t1: T1Responder::new(0x5A), store, seq: 0 }
++    }
++
++    /// Send `apdu` in I-blocks of at most `block` bytes, with the M bit on
++    /// all but the last, and reassemble the response into (data, SW).
++    fn send_chained(&mut self, apdu: &[u8], block: usize) -> (Vec<u8>, u16) {
++        let parts: Vec<&[u8]> = apdu.chunks(block).collect();
++        let mut chunks = vec![];
++        for (i, part) in parts.iter().enumerate() {
++            let more = if i + 1 < parts.len() { 0x20 } else { 0x00 };
++            let mut frame = vec![0x5A, (self.seq << 6) | more, part.len() as u8];
++            frame.extend_from_slice(part);
++            let crc = crc16_x25(&frame);
++            frame.extend_from_slice(&[crc as u8, (crc >> 8) as u8]);
++            self.seq ^= 1;
++            chunks = self.t1.process_frame(&frame, &mut self.store);
++            if more != 0 {
++                assert_eq!(chunks[0][1] & 0xC0, 0x80, "a chained I-block is acknowledged with an R-block");
++            }
++        }
++        let mut out = vec![];
++        for pair in chunks.chunks(2) {
++            out.extend_from_slice(&pair[1][..pair[0][2] as usize]);
++        }
++        let sw = out.split_off(out.len() - 2);
++        (out, u16::from_be_bytes([sw[0], sw[1]]))
++    }
++
++    fn send(&mut self, apdu: &[u8]) -> (Vec<u8>, u16) {
++        self.send_chained(apdu, 254)
++    }
++
++    fn get_timestamp(&mut self) -> Vec<u8> {
++        let (body, sw) = self.send(&[0x80, 0x04, 0x00, 0x3D, 0x00]);
++        assert_eq!(sw, 0x9000);
++        parse(&body).remove(0).1
++    }
++}
++
++/// Send `ins` with `data` inside a Platform SCP03 session at full security
++/// level (C-MAC, C-DECRYPTION, R-MAC, R-ENCRYPTION): CLA 84, short Lc and an
++/// encrypted data field on the wire. Returns the decrypted response data and
++/// the SW. Uses the crate's SCP03 primitives, which tests/scp03.rs checks
++/// against an independent host.
++fn send_scp03(host: &mut T1Host, ins: u8, data: &[u8]) -> (Vec<u8>, u16) {
++    let keys = Scp03Config::from_env(AppletVersion::from_env());
++    let host_ch = [0xA0u8; 8];
++    let mut init = vec![0x80, 0x50, keys.kvn, 0x00, 0x08];
++    init.extend_from_slice(&host_ch);
++    init.push(0x00);
++    let (resp, sw) = host.send(&init);
++    assert_eq!(sw, 0x9000, "INITIALIZE UPDATE");
++    let card_ch: [u8; 8] = resp[13..21].try_into().unwrap();
++    let (s_enc, s_mac, s_rmac) =
++        crypto::derive_session_keys(&keys.enc, &keys.mac, &host_ch, &card_ch).unwrap();
++    let host_crypto = crypto::cryptogram(&s_mac, &host_ch, &card_ch, crypto::DDC_HOST_CRYPTOGRAM).unwrap();
++    let mut auth = vec![0x84, 0x82, 0x33, 0x00, 0x10];
++    auth.extend_from_slice(&host_crypto);
++    let mut mcv = crypto::cmac_chain(&s_mac, &[0; 16], &auth).unwrap();
++    auth.extend_from_slice(&mcv[..8]);
++    assert_eq!(host.send(&auth), (vec![], 0x9000), "EXTERNAL AUTHENTICATE");
++
++    // The first command of a session uses counter 1.
++    let icv = crypto::counter_icv(&s_enc, 1, false).unwrap();
++    let enc = crypto::cbc_crypt(&s_enc, &icv, &crypto::pad_m2(data), true).unwrap();
++    let mut wire = vec![0x84, ins, 0x00, 0x00, (enc.len() + 8) as u8];
++    wire.extend_from_slice(&enc);
++    mcv = crypto::cmac_chain(&s_mac, &mcv, &wire).unwrap();
++    wire.extend_from_slice(&mcv[..8]);
++    wire.push(0x00); // Le
++    let (resp, sw) = host.send(&wire);
++    if sw != 0x9000 {
++        return (resp, sw);
++    }
++    let (enc, rmac) = resp.split_at(resp.len() - 8);
++    let mut mac_in = enc.to_vec();
++    mac_in.extend_from_slice(&sw.to_be_bytes());
++    assert_eq!(crypto::cmac_chain(&s_rmac, &mcv, &mac_in).unwrap()[..8], *rmac, "R-MAC");
++    let icv = crypto::counter_icv(&s_enc, 1, true).unwrap();
++    let plain = crypto::cbc_crypt(&s_enc, &icv, enc, false).unwrap();
++    (crypto::unpad_m2(&plain).unwrap(), sw)
++}
++
++fn tlv(tag: u8, v: &[u8]) -> Vec<u8> {
++    let mut o = vec![tag, v.len() as u8];
++    o.extend_from_slice(v);
++    o
++}
++
++fn attest_data(obj: [u8; 4], key: [u8; 4], algo: u8, fresh: &[u8]) -> Vec<u8> {
++    [tlv(0x41, &obj), tlv(0x45, &key), tlv(0x46, &[algo]), tlv(0x47, fresh)].concat()
++}
++
++/// Extended Lc and extended Le 00 00, the way Plug & Trust frames an attested read.
++fn ext_apdu(ins: u8, p1: u8, p2: u8, data: &[u8]) -> Vec<u8> {
++    let mut a = vec![0x80, ins, p1, p2, 0x00, (data.len() >> 8) as u8, data.len() as u8];
++    a.extend_from_slice(data);
++    a.extend_from_slice(&[0x00, 0x00]);
++    a
++}
++
++/// What the SE hashes: the plain command with extended Lc, without Le.
++fn hashed_cmd(ins: u8, data: &[u8]) -> Vec<u8> {
++    let mut a = ext_apdu(ins, 0x00, 0x00, data);
++    a.truncate(a.len() - 2);
++    a
++}
++
++fn short_apdu(ins: u8, p1: u8, p2: u8, data: &[u8]) -> Vec<u8> {
++    let mut a = vec![0x80, ins, p1, p2, data.len() as u8];
++    a.extend_from_slice(data);
++    a
++}
++
++/// TLV parser for short, 0x81 and 0x82 lengths.
++fn parse(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
++    let mut out = vec![];
++    let mut i = 0;
++    while i < body.len() {
++        let (len, hl) = match body[i + 1] {
++            0x81 => (body[i + 2] as usize, 3),
++            0x82 => (((body[i + 2] as usize) << 8) | body[i + 3] as usize, 4),
++            l => (l as usize, 2),
++        };
++        out.push((body[i], body[i + hl..i + hl + len].to_vec()));
++        i += hl + len;
++    }
++    out
++}
++
++fn tags(t: &[(u8, Vec<u8>)]) -> Vec<u8> {
++    t.iter().map(|(tag, _)| *tag).collect()
++}
++
++fn public_key(store: &ObjectStore, id: &[u8; 4]) -> Vec<u8> {
++    match store.get(id) {
++        Some(SecureObject::ECKeyPair { public_key, .. }) => public_key.clone(),
++        other => panic!("not an EC key pair: {other:?}"),
++    }
++}
++
++/// Check the ECDSA signature over SHA-256(SHA-256(cmd) || the response TLVs
++/// re-encoded with 0x82 lengths). Returns the signed TLVs, or None if the
++/// signature does not verify.
++fn verify256(att_pub: &[u8], cmd: &[u8], body: &[u8]) -> Option<Vec<(u8, Vec<u8>)>> {
++    let mut t = parse(body);
++    let (tag, sig) = t.pop()?;
++    assert_eq!(tag, 0x52, "the signature comes last");
++    let mut m = Sha256::digest(cmd).to_vec();
++    for (tag, v) in &t {
++        m.extend_from_slice(&[*tag, 0x82, (v.len() >> 8) as u8, v.len() as u8]);
++        m.extend_from_slice(v);
++    }
++    let vk = VerifyingKey::from_sec1_bytes(att_pub).unwrap();
++    vk.verify_prehash(&Sha256::digest(&m), &Signature::from_der(&sig).ok()?).ok()?;
++    Some(t)
++}
++
++/// Generate a P-256 key pair inside the SE, with an optional one-entry policy.
++fn gen_p256(host: &mut T1Host, id: [u8; 4], ar_header: Option<u32>) -> u16 {
++    let mut d = vec![];
++    if let Some(h) = ar_header {
++        let mut entry = vec![8, 0, 0, 0, 0];
++        entry.extend_from_slice(&h.to_be_bytes());
++        d.extend(tlv(0x11, &entry)); // TAG_POLICY
++    }
++    d.extend(tlv(0x41, &id));
++    d.extend(tlv(0x42, &[0x03])); // NIST P-256
++    host.send(&short_apdu(0x01, 0x61, 0x00, &d)).1
++}
++
++#[test]
++fn signature_covers_the_plain_command_on_every_transport() {
++    let mut host = T1Host::new();
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    let att_pub = public_key(&host.store, &ATTEST_KEY_ID);
++    let data = attest_data(KEY, ATTEST_KEY_ID, 0x21, &[0xA5; 16]);
++    let cmd = hashed_cmd(0x22, &data);
++    let mut short = short_apdu(0x22, 0, 0, &data);
++    short.push(0x00);
++
++    let answers = [
++        ("plain, one I-block", host.send(&ext_apdu(0x22, 0, 0, &data))),
++        ("plain, two chained I-blocks", host.send_chained(&ext_apdu(0x22, 0, 0, &data), 10)),
++        ("short Lc on the wire", host.send(&short)),
++        ("Platform SCP03, full level", send_scp03(&mut host, 0x22, &data)),
++    ];
++    for (name, (body, sw)) in answers {
++        assert_eq!(sw, 0x9000, "{name}");
++        let t = verify256(&att_pub, &cmd, &body).unwrap_or_else(|| panic!("{name}: signature"));
++        assert_eq!(tags(&t), [0x41, 0x42, 0x43, 0x44, 0x4F], "{name}");
++    }
++    // The short-Lc command is signed in its extended form, not as received.
++    let (body, _) = host.send(&short);
++    assert!(verify256(&att_pub, &short[..short.len() - 1], &body).is_none());
++}
++
++#[test]
++fn origin_follows_the_latest_key_value() {
++    let mut host = T1Host::new();
++    let att_pub = public_key(&host.store, &ATTEST_KEY_ID);
++    let data = attest_data(KEY, ATTEST_KEY_ID, 0x21, &[0x77; 16]);
++    let origin = |host: &mut T1Host| {
++        let (body, sw) = host.send(&ext_apdu(0x22, 0, 0, &data));
++        assert_eq!(sw, 0x9000);
++        let t = verify256(&att_pub, &hashed_cmd(0x22, &data), &body).expect("signature");
++        t[2].1[14] // attributes without a policy: the origin follows the RFU bytes
++    };
++
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    assert_eq!(origin(&mut host), 0x02, "generated inside the SE: INTERNAL");
++    let host_key = p256::ecdsa::SigningKey::from_slice(&[0x11; 32]).unwrap();
++    let host_pub = host_key.verifying_key().to_encoded_point(false).as_bytes().to_vec();
++    let import = [tlv(0x41, &KEY), tlv(0x42, &[0x03]), tlv(0x43, &[0x11; 32]), tlv(0x44, &host_pub)].concat();
++    assert_eq!(host.send(&short_apdu(0x01, 0x61, 0x00, &import)).1, 0x9000);
++    assert_eq!(origin(&mut host), 0x01, "host key imported over it: EXTERNAL");
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    assert_eq!(origin(&mut host), 0x02, "regenerated: INTERNAL again");
++}
++
++#[test]
++fn attestation_key_refuses_ecdh() {
++    let mut host = T1Host::new();
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    let peer = p256::SecretKey::from_slice(&[0x22; 32]).unwrap();
++    let peer_pub = peer.public_key().to_encoded_point(false).as_bytes().to_vec();
++    let ecdh = |key: [u8; 4]| short_apdu(0x03, 0x01, 0x0F, &[tlv(0x41, &key), tlv(0x42, &peer_pub)].concat());
++    assert_eq!(host.send(&ecdh(ATTEST_KEY_ID)).1, 0x6986, "no ALLOW_KA");
++    assert_eq!(host.send(&ecdh(KEY)).1, 0x9000, "no policy");
++}
++
++#[test]
++fn forbid_all_blocks_attestation() {
++    let mut host = T1Host::new();
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    assert_eq!(gen_p256(&mut host, KEY2, Some(POLICY_FORBID_ALL | POLICY_ALLOW_ATTESTATION)), 0x9000);
++    let read = |key| ext_apdu(0x22, 0, 0, &attest_data(KEY, key, 0x21, &[0x44; 16]));
++    assert_eq!(host.send(&read(KEY2)).1, 0x6982);
++    assert_eq!(host.send(&read(ATTEST_KEY_ID)).1, 0x9000);
++}
++
++#[test]
++fn request_takes_only_its_own_tags_once_and_16_byte_freshness() {
++    let mut host = T1Host::new();
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    let att_pub = public_key(&host.store, &ATTEST_KEY_ID);
++    let fresh = [0x01; 16];
++    let chip_read = |offset: Vec<u8>| {
++        [offset, tlv(0x43, &[0, 4]), tlv(0x45, &ATTEST_KEY_ID), tlv(0x46, &[0x21]), tlv(0x47, &fresh)].concat()
++    };
++    let refused = [
++        ("TAG_8", [attest_data(KEY, ATTEST_KEY_ID, 0x21, &fresh), tlv(0x48, &[0xEE; 32])].concat()),
++        ("TAG_2 twice", [tlv(0x41, &UNIQUE_ID), tlv(0x42, &[0, 2]), chip_read(tlv(0x42, &[0, 4]))].concat()),
++        ("15-byte freshness", attest_data(KEY, ATTEST_KEY_ID, 0x21, &[0x01; 15])),
++        ("32-byte freshness", attest_data(KEY, ATTEST_KEY_ID, 0x21, &[0x01; 32])),
++    ];
++    for (name, d) in refused {
++        assert_eq!(host.send(&ext_apdu(0x22, 0, 0, &d)).1, 0x6A80, "{name}");
++    }
++    // Offset and length, each once, are part of the request format.
++    let ok = [tlv(0x41, &UNIQUE_ID), chip_read(tlv(0x42, &[0, 2]))].concat();
++    let (body, sw) = host.send(&ext_apdu(0x22, 0, 0, &ok));
++    assert_eq!(sw, 0x9000);
++    let t = verify256(&att_pub, &hashed_cmd(0x22, &ok), &body).expect("signature");
++    assert_eq!(t[0].1.len(), 4);
++}
++
++#[test]
++fn attest_bit_is_never_downgraded_to_a_plain_read() {
++    let mut host = T1Host::new();
++    assert_eq!(gen_p256(&mut host, KEY, None), 0x9000);
++    let att_pub = public_key(&host.store, &ATTEST_KEY_ID);
++    let data = attest_data(KEY, ATTEST_KEY_ID, 0x21, &[0x33; 16]);
++    // READ | ATTEST, alone or with the TRANSIENT and AUTH bits: attested,
++    // and the INS as received is what the SE hashes.
++    for ins in [0x22u8, 0x62, 0xA2, 0xE2] {
++        let (body, sw) = host.send(&ext_apdu(ins, 0, 0, &data));
++        assert_eq!(sw, 0x9000, "INS {ins:02X}");
++        let t = verify256(&att_pub, &hashed_cmd(ins, &data), &body).expect("signature");
++        assert_eq!(tags(&t), [0x41, 0x42, 0x43, 0x44, 0x4F], "INS {ins:02X}");
++    }
++    // Other INS with the attest bit, and attested reads with another P1 or
++    // P2 (e.g. attested ReadObjectAttributes): refused, not answered plain.
++    for (ins, p1, p2) in [(0x21u8, 0x00u8, 0x00u8), (0x23, 0x00, 0x00), (0x24, 0x00, 0x00), (0x22, 0x00, 0x3B), (0x22, 0x01, 0x00)] {
++        assert_eq!(host.send(&ext_apdu(ins, p1, p2, &data)), (vec![], 0x6A86), "INS {ins:02X} P1 {p1:02X} P2 {p2:02X}");
++    }
++    // Plain ReadObject and ReadObjectAttributes are unchanged.
++    assert_eq!(host.send(&short_apdu(0x02, 0, 0, &tlv(0x41, &KEY))).1, 0x9000);
++    assert_eq!(host.send(&short_apdu(0x02, 0, 0x3B, &tlv(0x41, &KEY))).1, 0x9000);
++}
++
++#[test]
++fn timestamp_increases_across_a_quick_restart() {
++    // Boot as tcp_server does: provision, then start the attestation clock.
++    let boot = || {
++        let mut host = T1Host::new();
++        host.store.start_attest_clock();
++        host
++    };
++    let mut before = boot();
++    let mut last = vec![];
++    for _ in 0..20 {
++        let ts = before.get_timestamp();
++        assert!(ts > last, "strictly increasing within a run");
++        last = ts;
++    }
++    drop(before); // power off, and on again at once
++    let mut after = boot();
++    let started = Instant::now();
++    let first = after.get_timestamp();
++    assert!(started.elapsed() < Duration::from_millis(500), "the start-up wait is not in GetTimestamp");
++    assert!(first > last, "before {} after {}", hex::encode(&last), hex::encode(&first));
++}

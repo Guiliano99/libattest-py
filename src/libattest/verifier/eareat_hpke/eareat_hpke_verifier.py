@@ -14,174 +14,58 @@ Appraisal gates (G0-G5): decode CMW -> HPKE-open -> verify inner EAT-JWS -> fres
 (inner ``eat_nonce`` AND protected-header ``eat_nonce`` == RA nonce) -> appraise
 ``mock_claim``.  Real decryption + verification; no stub path.
 
-HPKE-0 via :mod:`libattest.formats.eat_ear.cwt_jwt_utils` and ES256 JWS via
-:mod:`libattest.formats.eat_ear.cwt_jwt_utils` — both on ``cryptography`` alone (no ``pyhpke`` /
-``python-jose``).  An affirming verdict carries the signed EAR JWT as its
-:attr:`~libattest.types.VerifyResult.payload`, which the RA engine harvests directly.
+Only the G0-G5 leg lives here.  Key publication, the media-type/nonce gates and EAR
+issuance are shared with the COSE sibling in
+:class:`~libattest.verifier.hpke_base.HpkeEarVerifier`.
+
+HPKE-0 and ES256 JWS both come from :mod:`libattest.formats.eat_ear.cwt_jwt_utils`, on
+``cryptography`` alone (no ``pyhpke`` / ``python-jose``).  An affirming verdict carries
+the signed EAR JWT as its :attr:`~libattest.types.VerifyResult.payload`, which the RA
+engine harvests directly.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from typing import Any
+from typing import ClassVar
 
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
 
 from libattest.formats import eareat_hpke as evidence
 from libattest.formats.eat_ear import cwt_jwt_utils
-from libattest.formats.eat_ear.cwt_jwt import EARAppraisal, EARToken, EATNonce, TrustworthinessTier
-from libattest.formats.media_types import EAT_JWT, base_media_type
+from libattest.formats.media_types import EAT_JWT
 from libattest.types import VerifyResult
-from libattest.verifier.base import AttestationVerifier
 from libattest.verifier.eat_appraisal import check_nonce_and_claim, eat_nonce_bytes
+from libattest.verifier.hpke_base import (
+    DEFAULT_REFERENCE_MOCK_CLAIM,
+    DEFAULT_SCHEME_NAME,
+    HpkeEarVerifier,
+)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SCHEME_NAME = "ATG_PLUGIN"
-DEFAULT_REFERENCE_MOCK_CLAIM = "secure"
-_EAT_PROFILE = "tag:github.com,2023:veraison/ear"
-_TRUST_VECTOR_KEYS = (
-    "instance-identity",
-    "configuration",
-    "executables",
-    "file-system",
-    "hardware",
-    "runtime-opaque",
-    "storage-opaque",
-    "sourced-data",
-)
+DEFAULT_VERIFIER_DEVELOPER = "eareat-hpke-verifier"
 
 
-def _ear_token_to_veraison_claims(token: EARToken) -> dict[str, Any]:
-    """Re-key a draft-04 EARToken into this verifier's Veraison EAR claims-set (dotted keys).
-
-    The EARToken is used only as a validated, self-documenting intermediate; the wire format
-    stays the Veraison one (``ear.status`` etc.) that ``libattest.formats.eat_ear.cwt_jwt.parse_ear_verdict`` and the
-    ``VeraisonVerifierClient`` consume.
-    """
-    submods: dict[str, Any] = {}
-    for name, appr in token.submods.items():
-        submod: dict[str, Any] = {
-            "ear.status": appr.status.value,
-            "ear.trustworthiness-vector": appr.trustworthiness_vector,
-        }
-        if appr.appraisal_policy_ids:
-            submod["ear.appraisal-policy-id"] = appr.appraisal_policy_ids[0]  # we set exactly one
-        submods[name] = submod
-    claims: dict[str, Any] = {
-        "eat_profile": token.eat_profile,
-        "iat": token.iat,
-        "ear.verifier-id": token.verifier_id,
-        "submods": submods,
-    }
-    if token.nonce is not None:
-        claims["eat_nonce"] = token.nonce.as_b64_str()  # round-trips to the input base64url string
-    return claims
-
-
-class EarEatHpkeVerifier(AttestationVerifier):
+class EarEatHpkeVerifier(HpkeEarVerifier):
     """Verifier for JOSE-HPKE-0-encrypted EAR/EAT evidence.
 
-    Parameters
-    ----------
-    attestation_public_key:
-        The attester's EAT-JWS verification key (an EC public key, or PEM/DER bytes).
-    reference_mock_claim:
-        The ``mock_claim`` value an affirming attestation must present.
-    scheme_name:
-        The EAR ``submods`` scheme key (defaults to ``ATG_PLUGIN``).
-    ear_signing_key / hpke_recipient_key:
-        Optional P-256 keys; fresh ones are generated when omitted.  The EAR key
-        signs issued EARs (publish :meth:`ear_verification_pem`); the HPKE key is the
-        recipient the attester encrypts Evidence to (publish :meth:`evidence_encryption_jwk`).
-
+    See :class:`~libattest.verifier.hpke_base.HpkeEarVerifier` for the constructor
+    parameters; this subclass supplies only the JOSE evidence leg.
     """
 
-    media_type = EAT_JWT
-
-    def __init__(
-        self,
-        *,
-        attestation_public_key: ec.EllipticCurvePublicKey | bytes | str,
-        reference_mock_claim: str = DEFAULT_REFERENCE_MOCK_CLAIM,
-        scheme_name: str = DEFAULT_SCHEME_NAME,
-        ear_signing_key: ec.EllipticCurvePrivateKey | None = None,
-        hpke_recipient_key: ec.EllipticCurvePrivateKey | None = None,
-    ) -> None:
-        """Store appraisal policy and the verifier's signing / recipient keys."""
-        self._attestation_public_key = attestation_public_key
-        self._reference_mock_claim = reference_mock_claim
-        self._scheme_name = scheme_name
-        self._ear_signing_key = ear_signing_key or ec.generate_private_key(ec.SECP256R1())
-        self._hpke_recipient_key = hpke_recipient_key or ec.generate_private_key(ec.SECP256R1())
-
-    # ── published keys ───────────────────────────────────────────────────────────
-    def evidence_encryption_jwk(self, *, kid: str = "eareat-hpke-verifier") -> dict:
-        """Return this verifier's HPKE recipient public key as a JWK for the attester."""
-        jwk = cwt_jwt_utils.p256_public_to_jwk(self._hpke_recipient_key.public_key())
-        jwk.update({"alg": cwt_jwt_utils.HPKE0_ALG, "use": "enc", "kid": kid})
-        return jwk
-
-    def ear_verification_pem(self) -> str:
-        """Return the EAR-JWT signing public key (PEM) for the MockCA to verify EARs."""
-        return (
-            self._ear_signing_key.public_key()
-            .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
-            .decode("ascii")
-        )
-
-    # ── AttestationVerifier interface ────────────────────────────────────────────
-    def get_nonce(self, nonce_size: int = 32) -> bytes:
-        """Return empty bytes: the RA/MockCA issues the nonce for this stateless flow."""
-        return b""
-
-    def verify_token(
-        self,
-        token_bytes: bytes,
-        media_type: str,
-        nonce: bytes | None = None,
-    ) -> VerifyResult:
-        """Appraise one CMW/JOSE-HPKE statement and, on success, issue a signed EAR JWT.
-
-        ``token_bytes`` is the ``AttestationStatement.stmt`` DER (a CMW ``UTF8String``),
-        i.e. what :meth:`libattest.verifier.router.VerifierRouter.verify_bundle` passes.
-        """
-        if base_media_type(media_type) not in (EAT_JWT, "application/octet-stream"):
-            return VerifyResult.unknown(f"unsupported media type {media_type!r}; expected {EAT_JWT!r}")
-        if not nonce:
-            return VerifyResult.contraindicated("missing freshness nonce for HPKE EAR/EAT appraisal")
-        return self._appraise(token_bytes, nonce)
-
-    def nonce_response(self, nonce: bytes, *, expiry: int | None = None) -> bytes:
-        """Return a ``NonceResponse`` DER handing the attester *nonce* + this verifier's HPKE key.
-
-        Uses libattest's CMP nonce-freshness structures (``NonceResponse``); the attester
-        reads ``respTypeInfo.respInfo`` to learn the recipient key to encrypt Evidence to.
-        """
-        return evidence.build_evidence_enc_nonce_response(nonce, self._hpke_recipient_key.public_key(), expiry=expiry)
-
-    def verify_bundle_der(self, bundle_der: bytes, nonce: bytes) -> VerifyResult:
-        """Appraise the first statement of an AttestationBundle DER (convenience entrypoint).
-
-        The demo service receives the whole bundle in one POST; this unwraps it with the
-        shared :mod:`libattest.formats.eareat_hpke` helpers (no hand-rolled ASN.1).
-        """
-        try:
-            stmt_der = evidence.first_statement_der(bundle_der)
-        except (ValueError, KeyError) as exc:
-            logger.warning("bundle decode failed: %s", exc)
-            return VerifyResult.contraindicated(f"bundle decode failed: {exc}")
-        return self.verify_token(stmt_der, self.media_type, nonce)
+    media_type: ClassVar[str] = EAT_JWT
+    default_verifier_developer: ClassVar[str] = DEFAULT_VERIFIER_DEVELOPER
 
     # ── gates G0-G5 ──────────────────────────────────────────────────────────────
     def _appraise(self, stmt_der: bytes, expected_nonce: bytes) -> VerifyResult:
+        """Open the JWE, verify the inner EAT-JWS, and appraise freshness + ``mock_claim``."""
         expected_b64u = cwt_jwt_utils.b64u_encode(expected_nonce)
         try:
             jwe = evidence.extract_jwe_from_statement(stmt_der)  # G0
-            header, inner = cwt_jwt_utils.open_integrated(jwe, self._hpke_recipient_key)  # G1/G2
+            header, inner = cwt_jwt_utils.open_integrated(  # G1/G2
+                jwe, self._hpke_recipient_key, hpke_info=self._hpke_info
+            )
         except (ValueError, InvalidTag) as exc:
             logger.warning("evidence decode/decrypt failed: %s", exc)
             return VerifyResult.contraindicated(f"evidence decode/decrypt failed: {exc}")
@@ -204,36 +88,10 @@ class EarEatHpkeVerifier(AttestationVerifier):
         logger.info("appraisal passed: mock_claim matches reference")
         return VerifyResult.affirming(self._build_ear_jwt(expected_b64u, "affirming"))
 
-    # ── EAR issuance ─────────────────────────────────────────────────────────────
-    def issue_ear(self, nonce: bytes, status: str = "contraindicated") -> str:
-        """Sign an EAR JWT for *status* over *nonce*.
 
-        An affirming verdict already carries its EAR as the ``VerifyResult.payload``;
-        this is for callers that must also emit an EAR for a rejected verdict (e.g. a
-        service that returns an EAR regardless of outcome).
-        """
-        return self._build_ear_jwt(cwt_jwt_utils.b64u_encode(nonce), status)
-
-    def _build_ear_jwt(self, nonce_b64url: str, status: str) -> str:
-        trust_vector = (
-            {key: 0 for key in _TRUST_VECTOR_KEYS} if status == "affirming" else {key: 99 for key in _TRUST_VECTOR_KEYS}
-        )
-        # Build a validated EARToken first (type-checks the status tier, nonce bounds, and
-        # structure), then emit it in this verifier's Veraison wire format (dotted keys).
-        token = EARToken(
-            eat_profile=_EAT_PROFILE,  # override the draft-04 default with the Veraison profile
-            iat=int(time.time()),
-            ear_verifier_id={"build": "N/A", "developer": "eareat-hpke-verifier"},
-            eat_nonce=EATNonce(cwt_jwt_utils.b64u_decode(nonce_b64url)),
-            submods={
-                self._scheme_name: EARAppraisal(
-                    ear_status=TrustworthinessTier(status),
-                    ear_trustworthiness_vector=trust_vector,
-                    ear_appraisal_policy_ids=[f"policy:{self._scheme_name}"],
-                )
-            },
-        )
-        return cwt_jwt_utils.sign_es256(_ear_token_to_veraison_claims(token), self._ear_signing_key)
-
-
-__all__ = ["EarEatHpkeVerifier"]
+__all__ = [
+    "DEFAULT_REFERENCE_MOCK_CLAIM",
+    "DEFAULT_SCHEME_NAME",
+    "DEFAULT_VERIFIER_DEVELOPER",
+    "EarEatHpkeVerifier",
+]

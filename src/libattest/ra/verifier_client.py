@@ -15,12 +15,14 @@ It is the ``/submitEvidenceCMP`` → EAR client moved out of the MockCA
   (:func:`libattest.formats.eat_ear.cwt_jwt.verify_ear_jwt`), and
 * checks the EAR verdict is affirming (:func:`libattest.formats.eat_ear.cwt_jwt.ear_is_affirming`).
 
-It implements the :class:`~libattest.verifier.base.AttestationVerifier` ABC
-(``get_nonce`` / ``verify_token``) so the engine and the
-:class:`~libattest.ra.registry.ServiceRegistry` treat it like any other
+It implements the RA's :class:`~libattest.ra.ports.EvidenceVerifier` port
+(``appraise``) as well as the :class:`~libattest.verifier.base.AttestationVerifier`
+ABC (``verify_token``), so the engine, the
+:class:`~libattest.ra.registry.ServiceRegistry` and the
+:class:`~libattest.verifier.router.VerifierRouter` all treat it like any other
 verifier — a developer swaps it for a custom verifier by registration, with no
-engine edit.  Under the RA-issued-nonce model the RA owns nonce generation, so
-``get_nonce`` returns empty bytes (no nonce is fetched from the verifier).
+engine edit.  Under the RA-issued-nonce model the RA owns nonce generation, so this
+client fetches no nonce from the verifier (it inherits the ABC's empty default).
 
 The submit path is configurable via ``VERIFIER_SUBMIT_PATH`` so one example can
 target a distinct endpoint; ``VERIFIER_LOG_PAYLOAD=1`` logs the exact JSON body.
@@ -32,12 +34,14 @@ import base64
 import json
 import logging
 import os
+from typing import ClassVar
 
 import requests
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from libattest.formats.eat_ear.cwt_jwt import ear_is_affirming, verify_ear_jwt
+from libattest.ra.ports import AppraisalRequest
 from libattest.types import VerifyResult
 from libattest.verifier.base import AttestationVerifier
 
@@ -103,11 +107,52 @@ class VeraisonVerifierClient(AttestationVerifier):
         self._ear_public_key: ec.EllipticCurvePublicKey | None = None
         logger.info("VeraisonVerifierClient initialised: base_url=%s", self.base_url)
 
-    # ── AttestationVerifier interface ──────────────────────────────────────────
+    # ── EvidenceVerifier port ──────────────────────────────────────────────────
 
-    def get_nonce(self, nonce_size: int = 32) -> bytes:
-        """Return empty bytes — the RA owns nonce generation, not the verifier."""
-        return b""
+    #: This client submits the whole ``AttestationBundle``, so the RA must hand it the
+    #: container and not just the statement (see :meth:`appraise`).  A verifier that
+    #: does not set this receives the statement plus its extracted endorsements only.
+    needs_bundle: ClassVar[bool] = True
+
+    @property
+    def accepts(self) -> frozenset[str]:
+        """Return the media types this client will submit (its configured one)."""
+        return frozenset({self.media_type})
+
+    def appraise(self, request: AppraisalRequest) -> VerifyResult:
+        """Submit *request* to the remote verifier and return its verdict.
+
+        Implementing the RA port natively is what lets this client see the negotiated
+        ``respInfo``, the key-attestation session id and the to-be-certified subject
+        key: the engine used to reach them through an ``isinstance`` check on this very
+        class, which meant no other verifier could ever be given them.
+
+        The **bundle** is submitted rather than the unwrapped statement because the
+        remote verifier selects the statement by ``evidence_oid`` and reads the AK
+        certificate chain out of the bundle's ``certs`` field; the statement alone
+        carries no endorsements.  That is what :attr:`needs_bundle` declares, and it is
+        why the RA still populates ``request.bundle`` for this client and for no other.
+        """
+        # Conditional kwargs: only the key-attestation profile sets a session id or a
+        # subject key, so quote/jwt submissions -- and subclasses that override
+        # submit_evidence with the narrower four-argument signature -- are unaffected.
+        extra: dict = {}
+        if request.session_id is not None:
+            extra["session_id"] = request.session_id
+        if request.subject_key is not None:
+            extra["pubkey"] = request.subject_key
+        ear_jwt = self.submit_evidence(
+            nonce=request.nonce,
+            evidence=request.bundle if request.bundle is not None else request.evidence,
+            evidence_oid=request.statement_oid or None,
+            resp_info_json=dict(request.resp_info) if request.resp_info is not None else None,
+            **extra,
+        )
+        if ear_jwt is None:
+            return VerifyResult.contraindicated(f"verifier rejected statement oid={request.statement_oid}")
+        return VerifyResult.affirming(ear_jwt)
+
+    # ── AttestationVerifier interface ──────────────────────────────────────────
 
     def verify_token(
         self,

@@ -79,6 +79,17 @@ def parse_ear_verdict(ear_jwt: str) -> dict[str, str]:
         base64-decoded or JSON-parsed.
 
     """
+    payload = _unverified_ear_payload(ear_jwt)
+    return {name: str(submod.get("ear.status", "unknown")) for name, submod in payload.get("submods", {}).items()}
+
+
+def _unverified_ear_payload(ear_jwt: str) -> dict[str, Any]:
+    """Return the JWT payload of *ear_jwt* **without checking its signature**.
+
+    Shared by the two non-authenticating readers (:func:`parse_ear_verdict` and
+    :func:`parse_ear`) so there is one decode, and one place where "this is not
+    authenticated" is stated.
+    """
     parts = ear_jwt.split(".")
     if len(parts) < 2:
         raise ValueError("Not a JWT: fewer than two '.' delimiters")
@@ -87,7 +98,26 @@ def parse_ear_verdict(ear_jwt: str) -> dict[str, str]:
         payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * pad))
     except Exception as exc:
         raise ValueError(f"Failed to decode EAR JWT payload: {exc}") from exc
-    return {name: str(submod.get("ear.status", "unknown")) for name, submod in payload.get("submods", {}).items()}
+    if not isinstance(payload, dict):
+        raise ValueError(f"EAR JWT payload must be a JSON object, got {type(payload).__name__}")
+    return payload
+
+
+def _jose_alg(header_b64: str) -> str | None:
+    """Return the ``alg`` of a compact JWS protected header, or ``None`` if unreadable."""
+    pad = (4 - len(header_b64) % 4) % 4
+    try:
+        header = json.loads(base64.urlsafe_b64decode(header_b64 + "=" * pad))
+    except Exception as exc:  # noqa: BLE001 - an unreadable header is a rejection
+        logger.warning("verify_ear_jwt: unreadable JOSE header: %s", exc)
+        return None
+    if not isinstance(header, dict):
+        logger.warning("verify_ear_jwt: JOSE header is not an object")
+        return None
+    alg = header.get("alg")
+    if alg != "ES256":
+        logger.warning("verify_ear_jwt: refusing alg=%r; only ES256 EARs are verified here", alg)
+    return alg if isinstance(alg, str) else None
 
 
 def verify_ear_jwt(ear_jwt: str, public_key: "ec.EllipticCurvePublicKey") -> bool:
@@ -113,6 +143,13 @@ def verify_ear_jwt(ear_jwt: str, public_key: "ec.EllipticCurvePublicKey") -> boo
         parts = ear_jwt.split(".")
         if len(parts) != 3:
             logger.warning("verify_ear_jwt: not a compact JWT (expected 3 parts)")
+            return False
+
+        # Check the JOSE header before touching the signature. Verifying ES256 bytes
+        # while ignoring what the token *claims* its algorithm is leaves the caller
+        # unable to say which algorithm it actually authenticated -- and it is this
+        # function that backs the RA's only trust decision.
+        if _jose_alg(parts[0]) != "ES256":
             return False
 
         message = (parts[0] + "." + parts[1]).encode("ascii")
@@ -385,6 +422,77 @@ class EARToken(BaseModel):
         alias="ear_device_topology",
         description="Attester graph as adjacency lists keyed by submods label. Optional.",
     )
+
+
+# ── EAR parsing: the Veraison wire format -> the validated model ─────────────────
+#
+# The EAR the verifiers emit uses Veraison's dotted claim names ("ear.status",
+# "ear.verifier-id"), while EARToken models draft-04 with underscore aliases.  Until
+# now the mapping existed only in the producing direction, so the RA could read an EAR
+# verdict as a bag of strings but never as a validated Attestation Result -- which is
+# precisely what a Relying Party has to appraise.
+
+#: Veraison top-level EAR claim names -> :class:`EARToken` field aliases.
+_VERAISON_TOP_KEYS: dict[str, str] = {
+    "ear.verifier-id": "ear_verifier_id",
+    "ear.status": "ear_status",
+    "ear.raw-evidence": "ear_raw_evidence",
+    "ear.device-topology": "ear_device_topology",
+}
+
+#: Veraison per-submodule EAR claim names -> :class:`EARAppraisal` field aliases.
+_VERAISON_SUBMOD_KEYS: dict[str, str] = {
+    "ear.status": "ear_status",
+    "ear.trustworthiness-vector": "ear_trustworthiness_vector",
+    "ear.appraisal-policy-id": "ear_appraisal_policy_ids",
+    "ear.attester-claims": "ear_attester_claims",
+    "ear.verifier-claims": "ear_verifier_claims",
+}
+
+
+def _rekey(source: Mapping[str, Any], table: Mapping[str, str]) -> dict[str, Any]:
+    """Rename known wire keys via *table*, passing unknown claims through untouched.
+
+    Unknown claims are kept because both models allow EAT extensions
+    (``$$ear-extension`` / ``$$ear-appraisal-extension``); silently dropping them
+    would make the model a lossy view of what was actually signed.
+    """
+    return {table.get(key, key): value for key, value in source.items()}
+
+
+def parse_ear(ear: str | Mapping[str, Any]) -> EARToken:
+    """Parse a Veraison-format EAR into the validated :class:`EARToken` model.
+
+    Accepts either a compact EAR JWT or an already-decoded claims mapping, and is the
+    inverse of the dotted-key rendering the verifiers produce.
+
+    **This does not authenticate anything.**  The signature is not checked here: a
+    Relying Party must call :func:`verify_ear_jwt` against pinned key material *first*
+    and parse second, so that "I could read it" is never mistaken for "I trust it".
+
+    :raises ValueError: the JWT is malformed, or the claims do not form a valid EAR
+        (``pydantic.ValidationError`` is a ``ValueError``).
+    """
+    claims = _unverified_ear_payload(ear) if isinstance(ear, str) else dict(ear)
+
+    submods_raw = claims.get("submods")
+    if not isinstance(submods_raw, Mapping):
+        raise ValueError("EAR is missing a 'submods' object; it carries no appraisal")
+
+    submods: dict[str, Any] = {}
+    for name, submod in submods_raw.items():
+        if not isinstance(submod, Mapping):
+            raise ValueError(f"EAR submod {name!r} is not an object")
+        appraisal = _rekey(submod, _VERAISON_SUBMOD_KEYS)
+        # Veraison writes a single policy id as a scalar; draft-04 models a list.
+        policy_ids = appraisal.get("ear_appraisal_policy_ids")
+        if policy_ids is not None and not isinstance(policy_ids, list):
+            appraisal["ear_appraisal_policy_ids"] = [policy_ids]
+        submods[name] = appraisal
+
+    token = _rekey(claims, _VERAISON_TOP_KEYS)
+    token["submods"] = submods
+    return EARToken.model_validate(token)
 
 
 # ============================================================================
@@ -890,6 +998,7 @@ __all__ = [
     "EARToken",
     "TrustworthinessTier",
     "ear_is_affirming",
+    "parse_ear",
     "parse_ear_verdict",
     "verify_ear_jwt",
     # CWT Claim Set <-> JWT-style View conversion (former formats.cwt_jwt)

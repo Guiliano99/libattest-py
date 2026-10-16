@@ -15,9 +15,16 @@ logger = logging.getLogger(__name__)
 class AttestationVerifier(ABC):
     """Interface implemented by concrete attestation verifiers."""
 
-    @abstractmethod
     def get_nonce(self, nonce_size: int = 32) -> bytes:
-        """Return fresh nonce bytes, or empty bytes if no nonce is available."""
+        """Return fresh nonce bytes, or empty bytes if no nonce is available.
+
+        Not abstract: under the RA-issued-nonce model the **RA** owns freshness, so a
+        verifier that never mints nonces inherits this empty default instead of
+        stubbing ``return b""``.  :meth:`~libattest.verifier.router.VerifierRouter.get_nonce`
+        treats empty bytes as "this route issues no nonce" and records no nonce→route
+        mapping, which is what those verifiers already meant.
+        """
+        return b""
 
     @abstractmethod
     def verify_token(

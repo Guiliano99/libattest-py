@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from libattest.formats.tpm.quote_profile import (
+from libattest.formats.tpm.structures import (
     decode_tpm20_quote_req_info,
     decode_tpm20_quote_resp_info,
     encode_tpm20_quote_req_info,

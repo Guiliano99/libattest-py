@@ -485,11 +485,17 @@ def _as_public_key(key: ec.EllipticCurvePublicKey | dict[str, Any]) -> ec.Ellipt
 def open_integrated(
     compact_jwe: str,
     recipient_priv: ec.EllipticCurvePrivateKey | dict[str, Any],
+    *,
+    hpke_info: bytes = b"",
 ) -> tuple[dict, bytes]:
     """Open an HPKE-0 Integrated compact JWE.
 
     :param compact_jwe: ``protected.enc..ciphertext.`` (empty IV and Tag).
     :param recipient_priv: a P-256 ``cryptography`` private key or a private JWK dict.
+    :param hpke_info: HPKE ``info`` binding the key schedule to an application context.
+        It must equal what the sealer used, or the AEAD fails; ``b""`` (the default)
+        is the unbound form every existing peer produces, so a deployment opts into
+        binding on both sides together.
     :returns: ``(protected_header, plaintext)``.
     :raises ValueError: malformed JWE / unsupported alg / non-empty IV or Tag.
     :raises cryptography.exceptions.InvalidTag: AEAD failure (wrong key / tampered ct / bad aad).
@@ -501,7 +507,17 @@ def open_integrated(
     if iv or tag:
         raise ValueError("HPKE-0 Integrated Encryption requires empty IV and Tag")
 
-    header = json.loads(b64u_decode(protected_b64))
+    # The protected header is attacker-supplied and reaches us before any authentication,
+    # so every malformed shape has to leave here as a ValueError the caller already
+    # contraindicates on — a non-object header used to reach ``.get`` and raise
+    # AttributeError, crashing the verifier instead of rejecting the statement.
+    try:
+        header = json.loads(b64u_decode(protected_b64))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("JWE protected header is not valid JSON") from exc
+    if not isinstance(header, dict):
+        raise ValueError(f"JWE protected header must be a JSON object, got {type(header).__name__}")
+
     # HPKE-0 is itself the Integrated-Encryption alg (draft-20 §5.1); the protected header
     # carries ``alg`` only and no separate ``enc`` parameter.
     if header.get("alg") != HPKE0_ALG:
@@ -511,7 +527,7 @@ def open_integrated(
     aad = protected_b64.encode("ascii")
     blob = b64u_decode(enc_b64) + b64u_decode(ct_b64)  # cryptography expects enc || ct
     sk = _as_private_key(recipient_priv)
-    plaintext = _decrypt_with_aad(hpke0_suite(), blob, sk, b"", aad)
+    plaintext = _decrypt_with_aad(hpke0_suite(), blob, sk, hpke_info, aad)
     return header, plaintext
 
 
@@ -519,11 +535,19 @@ def seal_integrated(
     plaintext: bytes,
     protected_header: dict,
     recipient_pub: ec.EllipticCurvePublicKey | dict[str, Any],
+    *,
+    hpke_info: bytes = b"",
 ) -> str:
     """Seal *plaintext* as an HPKE-0 Integrated compact JWE (used for tests/round-trip).
 
     The attester-side equivalent is done in gencmpclient via OpenSSL ``OSSL_HPKE_*``;
     this Python sealer exists for conformance/round-trip testing of the verifier path.
+
+    *hpke_info* binds the HPKE key schedule to an application context (for example the
+    verifier identity and the exchange this Evidence belongs to).  The AEAD ``aad`` is
+    already fixed by compact serialization to the protected header, so ``info`` is the
+    only place a caller can add binding of its own.  It defaults to ``b""`` — the
+    unbound form every existing peer produces — because both ends must agree.
     """
     header = dict(protected_header)
     header.setdefault("alg", HPKE0_ALG)
@@ -531,7 +555,7 @@ def seal_integrated(
     aad = protected_b64.encode("ascii")
 
     pkr = _as_public_key(recipient_pub)
-    blob = _encrypt_with_aad(hpke0_suite(), plaintext, pkr, b"", aad)
+    blob = _encrypt_with_aad(hpke0_suite(), plaintext, pkr, hpke_info, aad)
     enc_len = _enc_len(pkr)
     enc, ct = blob[:enc_len], blob[enc_len:]
     # protected '.' enc '.' (empty IV) '.' ciphertext '.' (empty Tag)
@@ -572,6 +596,9 @@ def seal_cose_hpke_evidence(
     ear_jwt: bytes,
     recipient_pub_key: ec.EllipticCurvePublicKey,
     signing_key: ec.EllipticCurvePrivateKey | None = None,
+    *,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
 ) -> bytes:
     """COSE-HPKE-0 encrypt an EAT/EAR JWT for the verifier (draft-ietf-cose-hpke).
 
@@ -588,6 +615,12 @@ def seal_cose_hpke_evidence(
     outside its built-in registry and auto-stamps exp/nbf/iat, which would lose
     ``eat_nonce`` -- the freshness binding this evidence exists to protect. Signing the
     opaque claims bytes preserves every claim.
+
+    *hpke_info* binds the HPKE key schedule and *external_aad* binds the COSE
+    ``Enc_structure`` to an application context — the COSE counterparts of the JOSE
+    profile's :func:`seal_integrated` ``hpke_info``.  Both default to ``b""``, the
+    unbound form, because the opener must supply exactly the same values; a deployment
+    turns binding on at both ends together.
 
     Returns the bare ``COSE_Encrypt0`` bytes (no CMW/OID/bundle wrapping).
 
@@ -614,26 +647,84 @@ def seal_cose_hpke_evidence(
             payload,
             recipient_key,
             protected={COSEHeaders.ALG: COSEAlgs.HPKE_0},
+            external_aad=external_aad,
+            hpke_info=hpke_info,
         ),
     )
+
+
+def _hpke_decrypt(
+    encrypted: bytes,
+    recipient_priv_key: ec.EllipticCurvePrivateKey,
+    *,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
+) -> bytes:
+    """HPKE-open the ``COSE_Encrypt0`` and return its raw payload."""
+    recipient_key = _ec_priv_to_cose_key(recipient_priv_key, kid="cose-hpke-recipient")
+    return cast(
+        bytes,
+        COSE.new().decode(encrypted, recipient_key, external_aad=external_aad, hpke_info=hpke_info),
+    )
+
+
+def _carries_cose_signature(payload: bytes) -> bool:
+    """Return whether *payload* is a COSE message rather than a bare CWT claims map."""
+    try:
+        decoded = cbor2.loads(payload)
+    except Exception:  # noqa: BLE001 - any CBOR failure means "not a COSE message"
+        return False
+    if isinstance(decoded, cbor2.CBORTag):
+        return decoded.tag in (17, 18, 98)  # Mac0 / Sign1 / Sign
+    return isinstance(decoded, list) and len(decoded) == 4  # untagged COSE_Sign1
 
 
 def open_cose_hpke_evidence(
     encrypted: bytes,
     recipient_priv_key: ec.EllipticCurvePrivateKey,
-    verify_key: ec.EllipticCurvePublicKey | None = None,
+    verify_key: ec.EllipticCurvePublicKey,
+    *,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
 ) -> dict:
-    """Open a :func:`seal_cose_hpke_evidence` result and return the CWT claims map.
+    """Open signed-then-encrypted COSE-HPKE evidence and return the CWT claims map.
 
-    *verify_key* must match whether *encrypted* was sealed with a *signing_key*: pass it
-    to verify the inner ``COSE_Sign1``, or omit it for the encrypt-only (unsigned) form.
+    *verify_key* is required. The recipient public key is published to attesters, so
+    anyone can seal to it; only the inner ``COSE_Sign1`` distinguishes evidence the
+    attester authored from evidence an attacker sealed. Evidence carrying no signature
+    layer is refused here rather than silently accepted — use
+    :func:`open_unsigned_cose_hpke_evidence` for the deliberate encrypt-only form.
+
+    :raises ValueError: the payload carries no COSE signature layer.
+    *hpke_info* and *external_aad* must match what the sealer used; see
+    :func:`seal_cose_hpke_evidence`.
+
+    :raises cwt.VerifyError: the inner ``COSE_Sign1`` does not verify under *verify_key*.
     """
-    recipient_key = _ec_priv_to_cose_key(recipient_priv_key, kid="cose-hpke-recipient")
-    payload = cast(bytes, COSE.new().decode(encrypted, recipient_key))
-    if verify_key is not None:
-        signer_key = _ec_pub_to_cose_key(verify_key, kid="cose-hpke-signer")
-        payload = cast(bytes, COSE.new().decode(payload, signer_key))
-    return cbor2.loads(payload)
+    payload = _hpke_decrypt(encrypted, recipient_priv_key, hpke_info=hpke_info, external_aad=external_aad)
+    if not _carries_cose_signature(payload):
+        raise ValueError(
+            "COSE-HPKE evidence carries no COSE_Sign1 signature layer; "
+            "call open_unsigned_cose_hpke_evidence() to accept unsigned evidence deliberately"
+        )
+    signer_key = _ec_pub_to_cose_key(verify_key, kid="cose-hpke-signer")
+    return cbor2.loads(cast(bytes, COSE.new().decode(payload, signer_key)))
+
+
+def open_unsigned_cose_hpke_evidence(
+    encrypted: bytes,
+    recipient_priv_key: ec.EllipticCurvePrivateKey,
+    *,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
+) -> dict:
+    """Open encrypt-only COSE-HPKE evidence (RFC 8392 App. A.5) and return its claims.
+
+    The result is confidential but **not authenticated**: anyone holding the published
+    recipient public key can produce it. Callers must not treat these claims as
+    attester-asserted.
+    """
+    return cbor2.loads(_hpke_decrypt(encrypted, recipient_priv_key, hpke_info=hpke_info, external_aad=external_aad))
 
 
 __all__ = [
@@ -663,6 +754,7 @@ __all__ = [
     # COSE-HPKE-0 (former cose_hpke)
     "COSE_HPKE_STMT_TYPE_OID",
     "open_cose_hpke_evidence",
+    "open_unsigned_cose_hpke_evidence",
     "seal_cose_hpke_evidence",
 ]
 

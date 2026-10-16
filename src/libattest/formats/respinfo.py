@@ -26,12 +26,12 @@ from libattest.formats.key_attest_pop import (
     key_attest_resp_to_json,
     resolve_key_attest_evidence_oid,
 )
-from libattest.formats.tpm.quote_profile import (
+from libattest.formats.tpm import (
     decode_tpm20_quote_resp_info,
     encode_tpm20_quote_resp_info,
+    id_tcg_attest_quote,
     id_tpm20_quote_res,
 )
-from libattest.formats.tpm.tcg import id_tcg_attest_quote
 
 #: A DER(respInfo) → JSON-serialisable dict converter.
 ToJson = Callable[["bytes | bytearray | univ.Any"], dict[str, Any]]

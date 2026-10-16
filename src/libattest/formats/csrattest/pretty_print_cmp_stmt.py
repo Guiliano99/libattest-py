@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+"""Human-readable rendering of CMP attestation statements for debugging."""
+
 from __future__ import annotations
 
 from typing import Union

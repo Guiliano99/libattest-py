@@ -7,7 +7,7 @@
 Producing and appraising TPM evidence needs the native ``tpm2-pytss`` binding,
 which in turn pulls in the TSS2 C libraries.  That is a heavy dependency, and
 callers who only need the RA engine (:mod:`libattest.ra`) or the pyasn1-only
-TPM codecs (:mod:`libattest.formats.tpm.quote_profile`, ``.tcg``) never touch
+TPM codecs (:mod:`libattest.formats.tpm.structures`, ``.asn1_types``) never touch
 it — so it is packaged as the ``[tpm]`` extra rather than a hard requirement.
 
 Modules that genuinely need ``tpm2-pytss`` call :func:`require_pytss` directly

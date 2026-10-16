@@ -7,3 +7,18 @@ path = ["CHANGELOG.md", "README.md", "LICENSE", "scripts/**", ".github/skills/**
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Copyright 2025"
 SPDX-License-Identifier = "Apache-2.0"
+
+# SE050 simulator inputs (see docker/se05x-demo/sim/README.md): patches to
+# wolfSSL's SE050Sim and its lockfile. 0001/0002 are upstream PR #19 (wolfSSL);
+# 0003 is the Siemens attestation patch on top of wolfSSL's code.
+[[annotations]]
+path = ["docker/se05x-demo/sim/0001-*.patch", "docker/se05x-demo/sim/0002-*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright (C) 2026 wolfSSL Inc."
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = ["docker/se05x-demo/sim/0003-se05x-attestation.patch", "docker/se05x-demo/sim/Cargo.lock"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Copyright (C) 2026 wolfSSL Inc.", "Copyright 2026 Siemens AG"]
+SPDX-License-Identifier = "GPL-3.0-or-later"

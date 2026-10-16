@@ -13,8 +13,10 @@ MockCA's ``nonce_handler`` / ``rats_handler`` / ``attestation_verifier``:
    :class:`NonceStore`.
 2. :meth:`verify_bundle` — decode an ``AttestationBundle`` (libattest codec),
    and per statement: consume its nonce, resolve its profile, unwrap the
-   statement, submit to the profile's verifier, run the optional reference
-   handler, and aggregate per-statement verdicts + EAR JWTs.
+   statement, submit to the profile's verifier (with the profile's optional
+   reference handler composed onto it), appraise the returned Attestation Result
+   against the RA's acceptance policy, and aggregate per-statement verdicts + EAR
+   JWTs.
 
 The interface is deliberately **bytes / OID-strings / verdict objects** — never
 a ``PKIMessage``.  The carrier extracts ``(bundle_der, tx_id)`` from its own
@@ -28,18 +30,26 @@ from dataclasses import dataclass
 
 from pyasn1.type import univ
 
+from libattest.asn1_utils import encode_to_der
 from libattest.formats.csrattest import (
+    AttestationBundle,
     NonceResponse,
     NonceResponseTypeInfo,
     decode_attestation_bundle,
+    get_attestation_bundle_certs,
     unwrap_attestation_statement,
 )
 from libattest.ra.nonce import BadNonceRequest, NonceState, NonceStore, ReplayError
+from libattest.ra.ports import (
+    OCTET_STREAM,
+    AppraisalRequest,
+    ReferenceCheckedVerifier,
+    as_evidence_verifier,
+)
 from libattest.ra.profile import AttestationProfile
 from libattest.ra.registry import ProfileRegistry
-from libattest.ra.verifier_client import VeraisonVerifierClient
+from libattest.ra.relying_party import EarAcceptancePolicy
 from libattest.types import BundleVerifyResult, EarStatus, VerifyResult
-from libattest.verifier.base import AttestationVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +67,16 @@ class BundleVerifyOutcome:
     ear_jwts:
         The EAR JWT carried by each affirming statement's verdict (``None`` for
         non-affirming or payload-less statements), parallel to
-        ``result.per_statement``.
+        ``result.per_statement``.  See :attr:`affirming_ears` for the
+        ``(statement_oid, ear_jwt)`` list the RA's decision is actually over, and
+        :attr:`ear_extensions` for every certificate extension it yields.
 
     """
 
     result: BundleVerifyResult
     ear_jwts: tuple[str | None, ...] = ()
     profiles: ProfileRegistry | None = None
-    """The registry used to verify this bundle; resolves :attr:`first_ear_extension`.
+    """The registry used to verify this bundle; resolves :attr:`ear_extensions`.
     ``None`` only for outcomes built without a registry (e.g. a bundle-decode
     failure before any statement was routed)."""
 
@@ -87,29 +99,46 @@ class BundleVerifyOutcome:
         return None
 
     @property
-    def first_ear_extension(self) -> tuple[str, bytes] | None:
-        """Return ``(extn_oid_dot, extn_value_der)`` for the first affirming statement.
+    def affirming_ears(self) -> tuple[tuple[str, str], ...]:
+        """Return ``(statement_oid, ear_jwt)`` for **every** affirming statement.
 
-        Resolves the affirming statement's profile (via ``result.routes``, the
-        statement-OID list parallel to ``ear_jwts``) and calls its
-        ``encode_ear_extension`` — the same per-type EAR/CMW choice the profile
-        was built with. Lets a carrier embed the certificate extension without
-        re-decoding the bundle or resolving the profile itself.
+        A bundle may carry several statements — a platform quote and a key attestation,
+        say — each appraised by its own verifier and each yielding its own Attestation
+        Result.  The RA's decision is over that whole list, so it is exposed as a list;
+        :attr:`first_ear` and :attr:`first_ear_extension` are the single-statement
+        convenience views onto it.
+        """
+        return tuple((stmt_oid, jwt) for stmt_oid, jwt in zip(self.result.routes, self.ear_jwts) if jwt)
 
-        Returns ``None`` when nothing affirmed, or when the affirming
-        statement's profile no longer resolves (should not happen for a bundle
-        this engine itself just verified).
+    @property
+    def ear_extensions(self) -> tuple[tuple[str, bytes], ...]:
+        """Return ``(extn_oid_dot, extn_value_der)`` for every affirming statement.
+
+        Each affirming statement's profile is resolved via ``result.routes`` (the
+        statement-OID list parallel to ``ear_jwts``) and its ``encode_ear_extension``
+        called — the same per-type EAR/CMW choice the profile was built with.  Lets a
+        carrier embed **all** the resulting certificate extensions without re-decoding
+        the bundle or resolving profiles itself; previously only the first was
+        reachable, so a second attestation in the same bundle was verified and then
+        silently dropped on the way into the certificate.
+
+        Statements whose profile no longer resolves are skipped (it should not happen
+        for a bundle this engine itself just verified).
         """
         if self.profiles is None:
-            return None
-        for stmt_oid, jwt in zip(self.result.routes, self.ear_jwts):
-            if not jwt:
-                continue
+            return ()
+        extensions: list[tuple[str, bytes]] = []
+        for stmt_oid, jwt in self.affirming_ears:
             profile = self.profiles.by_statement(stmt_oid)
-            if profile is None:
-                continue
-            return profile.encode_ear_extension(jwt)
-        return None
+            if profile is not None:
+                extensions.append(profile.encode_ear_extension(jwt))
+        return tuple(extensions)
+
+    @property
+    def first_ear_extension(self) -> tuple[str, bytes] | None:
+        """Return the first of :attr:`ear_extensions`, or ``None`` when there are none."""
+        extensions = self.ear_extensions
+        return extensions[0] if extensions else None
 
 
 class RemoteAttestationEngine:
@@ -123,6 +152,13 @@ class RemoteAttestationEngine:
         The :class:`NonceStore` owning nonce lifecycle.  A fresh store is
         created when omitted (one nonce lifecycle per engine — no parallel
         nonce map).
+    ear_policy:
+        Optional :class:`~libattest.ra.relying_party.EarAcceptancePolicy`.  When set,
+        every affirming verdict's EAR must satisfy it — signature against configured
+        key material, freshness, and the RA-issued nonce — before the engine reports
+        the statement as accepted.  ``None`` keeps the pre-existing behaviour of
+        trusting whatever the verifier object returns, which is only safe when the
+        verifier is in-process.
 
     """
 
@@ -130,10 +166,13 @@ class RemoteAttestationEngine:
         self,
         profiles: ProfileRegistry,
         nonce_store: NonceStore | None = None,
+        *,
+        ear_policy: EarAcceptancePolicy | None = None,
     ) -> None:
-        """Wire the engine to a profile registry and (optionally) a nonce store."""
+        """Wire the engine to a profile registry, a nonce store, and an EAR policy."""
         self.profiles = profiles
         self.nonce_store = nonce_store if nonce_store is not None else NonceStore()
+        self.ear_policy = ear_policy
 
     @classmethod
     def from_env(cls, nonce_store: NonceStore | None = None) -> RemoteAttestationEngine:
@@ -191,38 +230,28 @@ class RemoteAttestationEngine:
 
         """
         profile = self.profiles.by_request_type(request_type_oid)
-        statement_oid: str | None
-        resp_info: bytes | None = None
-        session_id: str | None = None
-        if profile is not None:
-            statement_oid = profile.statement_oid
-            if profile.build_challenge is not None:
-                # Challenge profiles (key attestation) produce the respInfo via a
-                # verifier round-trip and bind a session id to the nonce.
-                resp_info, session_id = profile.build_challenge(req_info, profile.resolve_verifier())
-                logger.info(
-                    "RA engine: %s challenge for statement oid=%s (sessionId=%s, respInfo=%dB)",
-                    profile.resp_info_label,
-                    statement_oid,
-                    session_id,
-                    len(resp_info) if resp_info else 0,
-                )
-            else:
-                proposed = profile.parse_req_info(req_info)
-                resp_info = profile.build_resp_info(proposed)
-                if resp_info is not None:
-                    logger.info(
-                        "RA engine: attaching %s respInfo for statement oid=%s (%dB)",
-                        profile.resp_info_label,
-                        statement_oid,
-                        len(resp_info),
-                    )
-        else:
+        if profile is None:
             # No profile: store under the request type itself when present, else
             # positionally under None.
             statement_oid = str(request_type_oid) if request_type_oid else None
+            return self.nonce_store.issue(tx_id, statement_oid)
 
-        return self.nonce_store.issue(tx_id, statement_oid, resp_info=resp_info, session_id=session_id)
+        # One hook, whether the provisioning is a pure function of the client's reqInfo
+        # or the result of a verifier round-trip — see AttestationProfile.build_verifier_info.
+        provisioning = profile.build_verifier_info(req_info)
+        logger.info(
+            "RA engine: provisioning %s for statement oid=%s (sessionId=%s, respInfo=%dB)",
+            provisioning.label,
+            profile.statement_oid,
+            provisioning.session_id,
+            len(provisioning.resp_info) if provisioning.resp_info else 0,
+        )
+        return self.nonce_store.issue(
+            tx_id,
+            profile.statement_oid,
+            resp_info=provisioning.resp_info,
+            session_id=provisioning.session_id,
+        )
 
     def build_nonce_response(
         self,
@@ -265,7 +294,11 @@ class RemoteAttestationEngine:
         min_nonce_length:
             Minimum acceptable *requested_len*. ``None`` skips the check.
         expiry_time:
-            Optional ``NonceResponse.expiry`` value in seconds.
+            ``NonceResponse.expiry`` in seconds.  Defaults to the lifetime the nonce
+            store actually enforces, so the attester is told the deadline the RA will
+            hold it to; previously it defaulted to *absent*, which advertised no
+            deadline at all while a 300s TTL was being enforced.  Pass ``0`` to omit
+            the field.
 
         Returns
         -------
@@ -290,8 +323,9 @@ class RemoteAttestationEngine:
 
         response = NonceResponse()
         response["nonce"] = state.nonce
-        if expiry_time is not None:
-            response["expiry"] = expiry_time
+        expiry = self.nonce_store.ttl_seconds if expiry_time is None else expiry_time
+        if expiry:
+            response["expiry"] = expiry
         if response_type_oid is not None:
             resp_type_info = NonceResponseTypeInfo()
             resp_type_info["type"] = univ.ObjectIdentifier(response_type_oid)
@@ -319,10 +353,11 @@ class RemoteAttestationEngine:
         2. Resolve its profile by ``statement_oid``.
         3. Unwrap the ``stmt`` open type via ``profile.unwrap_statement`` (or the
            libattest default when no profile).
-        4. Submit to the profile's verifier (forwarding the evidence OID and the
-           JSON respInfo when the verifier is the default HTTP client).
-        5. Run the profile's reference handler, if any; a rejecting reference
-           check downgrades an otherwise-affirming verdict to contraindicated.
+        4. Submit to the profile's verifier, with the profile's reference handler
+           (if any) composed onto it — a rejecting reference check downgrades an
+           otherwise-affirming verdict to contraindicated.
+        5. Appraise the returned Attestation Result against :attr:`ear_policy`,
+           when one is configured.
 
         Parameters
         ----------
@@ -365,6 +400,7 @@ class RemoteAttestationEngine:
             )
 
         statements = list(bundle["attestations"])
+        endorsements = _bundle_endorsements(bundle)
         verdicts: list[VerifyResult] = []
         route_oids: list[str] = []
         ear_jwts: list[str | None] = []
@@ -410,19 +446,13 @@ class RemoteAttestationEngine:
                 ear_jwts.append(None)
                 continue
 
-            # 3. Submit to the verifier.
-            verdict = self._submit(profile, nonce_state, stmt_oid, stmt_bytes, bundle_der, pubkey=pubkey)
+            # 3. Submit to the verifier (with its reference-value check composed on).
+            verdict = self._submit(
+                profile, nonce_state, stmt_oid, stmt_bytes, bundle_der, endorsements=endorsements, pubkey=pubkey
+            )
 
-            # 4. Optional reference-value check.
-            if verdict.status == EarStatus.affirming and profile.reference_handler is not None:
-                ref = profile.reference_handler.handle_evidence(stmt_bytes, attester_id=stmt_oid)
-                if not ref.accepted:
-                    logger.warning(
-                        "RA engine: reference check rejected statement oid=%s: %s",
-                        stmt_oid,
-                        ref.reason,
-                    )
-                    verdict = VerifyResult.contraindicated(f"reference check failed: {ref.reason or 'no reason given'}")
+            # 4. Appraise the Attestation Result itself (RFC 9334 Relying Party).
+            verdict = self._appraise_ear(profile, verdict, nonce_state.nonce)
 
             verdicts.append(verdict)
             route_oids.append(stmt_oid)
@@ -441,44 +471,71 @@ class RemoteAttestationEngine:
         stmt_bytes: bytes,
         bundle_der: bytes,
         *,
+        endorsements: tuple[bytes, ...] = (),
         pubkey: bytes | None = None,
     ) -> VerifyResult:
         """Submit one statement to its profile's verifier and return the verdict.
 
-        The default HTTP client (:class:`VeraisonVerifierClient`) is given the
-        FULL ``AttestationBundle`` DER (the verifier decodes the bundle, selects
-        the statement by ``evidence_oid`` and extracts the AK cert chain) plus
-        the ``resp_info_json`` context; any other :class:`AttestationVerifier` is
-        driven through the ABC ``verify_token`` with the unwrapped statement.
+        Everything the RA knows about the statement — the containing bundle, the
+        negotiated ``respInfo``, the key-attestation session id and subject key — goes
+        into one :class:`~libattest.ra.ports.AppraisalRequest`.  The engine no longer
+        names a concrete verifier class, so a custom verifier that implements
+        :meth:`~libattest.ra.ports.EvidenceVerifier.appraise` receives the full context;
+        one implementing only the older ``verify_token`` ABC is adapted transparently by
+        :func:`~libattest.ra.ports.as_evidence_verifier`.
         """
-        verifier: AttestationVerifier = profile.resolve_verifier()
-        media_type = getattr(verifier, "media_type", "application/octet-stream")
+        verifier = profile.resolve_verifier()
+        # The RA cannot learn the Evidence media type from the wire — an
+        # AttestationStatement carries a type OID, not a media type — so the deployment
+        # declares it on the profile.  Falling back to the verifier's own declaration
+        # asks the appraiser what it is appraising, which is only ever a guess.
+        media_type = profile.media_type or getattr(verifier, "media_type", OCTET_STREAM)
 
-        if profile.build_challenge is not None and not pubkey:
+        if profile.binds_subject_key and not pubkey:
             return VerifyResult.contraindicated("key attestation requires the to-be-certified SubjectPublicKeyInfo")
 
-        if isinstance(verifier, VeraisonVerifierClient):
-            resp_info_json = self._resp_info_json(profile, nonce_state.resp_info)
-            # Conditional kwargs: only the key-attestation profile sets a session
-            # id (on the nonce) or a pubkey, so quote/jwt submissions — and test
-            # doubles with the narrower signature — are unaffected.
-            extra: dict = {}
-            if nonce_state.session_id is not None:
-                extra["session_id"] = nonce_state.session_id
-            if pubkey is not None:
-                extra["pubkey"] = pubkey
-            ear_jwt = verifier.submit_evidence(
-                nonce=nonce_state.nonce,
-                evidence=bundle_der,
-                evidence_oid=stmt_oid,
-                resp_info_json=resp_info_json,
-                **extra,
-            )
-            if ear_jwt is None:
-                return VerifyResult.contraindicated(f"verifier rejected statement oid={stmt_oid}")
-            return VerifyResult.affirming(ear_jwt)
+        port = as_evidence_verifier(verifier)
+        if profile.reference_handler is not None:
+            port = ReferenceCheckedVerifier(port, profile.reference_handler)
 
-        return verifier.verify_token(stmt_bytes, media_type, nonce_state.nonce)
+        request = AppraisalRequest(
+            evidence=stmt_bytes,
+            media_type=media_type,
+            nonce=nonce_state.nonce,
+            statement_oid=stmt_oid,
+            # Least authority per statement: the whole container goes only to a verifier
+            # that says it parses one, and the CSR key only to a profile that binds it.
+            # Everyone else gets this statement, its endorsements, and nothing more.
+            bundle=bundle_der if getattr(verifier, "needs_bundle", False) else None,
+            endorsements=endorsements,
+            resp_info=self._resp_info_json(profile, nonce_state.resp_info),
+            subject_key=pubkey if profile.binds_subject_key else None,
+            session_id=nonce_state.session_id,
+        )
+        return port.appraise(request)
+
+    def _appraise_ear(self, profile: AttestationProfile, verdict: VerifyResult, nonce: bytes) -> VerifyResult:
+        """Apply the configured EAR acceptance policy to an affirming verdict.
+
+        Only an affirming verdict carrying an EAR JWT is appraised: a verdict that has
+        already failed needs no second opinion, and a verifier that returns no token
+        gives the RA nothing to appraise — that is reported as a rejection rather than
+        waved through, because a configured policy means the RA has been told not to
+        act on a verdict it cannot check.
+        """
+        if self.ear_policy is None or verdict.status != EarStatus.affirming:
+            return verdict
+        if not isinstance(verdict.payload, str) or not verdict.payload:
+            return VerifyResult.contraindicated(
+                f"verifier affirmed statement oid={profile.statement_oid} without an EAR to appraise"
+            )
+        decision = self.ear_policy.appraise(
+            verdict.payload,
+            expected_nonce=nonce,
+            anchor=profile.ear_anchor,
+            verifier_id=profile.verifier_id,
+        )
+        return decision.result
 
     @staticmethod
     def _resp_info_json(profile: AttestationProfile, resp_info_der: bytes | None) -> dict | None:
@@ -538,6 +595,25 @@ class RemoteAttestationEngine:
             raise _NonceError(f"nonce expired (positional={positional_instance}): {exc}") from exc
         except ReplayError as exc:
             raise _NonceError(f"nonce already consumed (positional={positional_instance}): {exc}") from exc
+
+
+def _bundle_endorsements(bundle: AttestationBundle) -> tuple[bytes, ...]:
+    """Return the bundle's ``certs`` as DER, decoded once for the whole bundle.
+
+    These are the Endorsements of RFC 9334 §3 — the AK/EK certificate chain vouching
+    for the Attester.  They used to be reachable only by re-parsing the container, which
+    is why every verifier was handed the whole bundle; extracting them here means a
+    verifier that only needs the chain never sees the other statements in it.
+
+    A bundle carrying a non-X.509 ``otherCert`` entry yields no endorsements rather than
+    raising: an unsupported endorsement format must not sink an otherwise valid bundle.
+    """
+    try:
+        certs = get_attestation_bundle_certs(bundle)
+    except NotImplementedError as exc:
+        logger.info("RA engine: bundle carries unsupported endorsement entries: %s", exc)
+        return ()
+    return tuple(encode_to_der(cert) for cert in certs)
 
 
 class _NonceError(Exception):

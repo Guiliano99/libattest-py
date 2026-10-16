@@ -17,6 +17,8 @@ RFC 9782: Entity Attestation Token (EAT) Media Types
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 # EAT media types from RFC 9782.
 EAT_CWT = "application/eat+cwt"
 EAT_JWT = "application/eat+jwt"
@@ -50,6 +52,10 @@ CMW_MEDIA_COSE = "application/cose"
 # TPM platform attestation media type.
 TPM_PLATFORM_MEDIA_TYPE = "application/vnd.tcg.platform"
 
+# NXP SE05x attested-read Evidence (DER ``Se05xAttestEvidence``). An unregistered
+# placeholder like ``TPM_PLATFORM_MEDIA_TYPE``: neither is in the IANA registry.
+SE05X_ATTESTATION_MEDIA_TYPE = "application/vnd.nxp.se05x-attestation+der"
+
 # Verifier endpoint media types.
 SESSION_MEDIA_TYPE = "application/vnd.veraison.challenge-response-session+json"
 PROVISIONING_MEDIA_TYPE = "application/vnd.veraison.provisioning-session+json"
@@ -59,6 +65,22 @@ CORIM_MEDIA_TYPE = "application/rim+cbor"
 def base_media_type(media_type: str) -> str:
     """Return the lowercase type/subtype without media-type parameters."""
     return media_type.split(";", 1)[0].strip().lower()
+
+
+def media_type_set(media_types: str | Iterable[str] | None) -> frozenset[str]:
+    """Normalise a media-type *declaration* to a set of parameter-free type/subtypes.
+
+    A bare ``str`` is one media type, never an iterable of characters:
+    ``frozenset("application/eat+jwt")`` is a set of seventeen single letters, so a
+    caller that declares one media type as a string would silently end up accepting
+    nothing real while appearing to accept something.  Parameters are stripped here so
+    a declaration and a wire value compare on the same footing.
+    """
+    if media_types is None:
+        return frozenset()
+    if isinstance(media_types, str):
+        media_types = (media_types,)
+    return frozenset(base_media_type(media_type) for media_type in media_types if media_type)
 
 
 def is_eat_media_type(media_type: str) -> bool:
@@ -94,9 +116,11 @@ __all__ = [
     "EAT_UJCS_JSON",
     "PROVISIONING_MEDIA_TYPE",
     "RFC9782_EAT_MEDIA_TYPES",
+    "SE05X_ATTESTATION_MEDIA_TYPE",
     "SESSION_MEDIA_TYPE",
     "TPM_PLATFORM_MEDIA_TYPE",
     "base_media_type",
     "is_eat_media_type",
+    "media_type_set",
     "with_eat_profile",
 ]

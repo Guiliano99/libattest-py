@@ -1,0 +1,11 @@
+# Named BuildKit context for downstream demo images: send package inputs only.
+.git
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.idea
+__pycache__
+*.py[cod]
+build
+dist

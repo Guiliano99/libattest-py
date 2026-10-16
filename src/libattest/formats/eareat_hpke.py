@@ -151,6 +151,7 @@ def build_evidence_statement(
     nonce: bytes,
     kid: str = DEFAULT_KID,
     statement_oid: str = EVIDENCE_ENC_OID,
+    hpke_info: bytes = b"",
 ):
     """Seal *eat_jws* for the recipient and wrap it as one ``AttestationStatement``.
 
@@ -160,7 +161,7 @@ def build_evidence_statement(
     ``eat_nonce``).
     """
     header = {"alg": cwt_jwt_utils.HPKE0_ALG, "kid": kid, "eat_nonce": cwt_jwt_utils.b64u_encode(nonce)}
-    jwe = cwt_jwt_utils.seal_integrated(eat_jws.encode("ascii"), header, recipient_hpke)
+    jwe = cwt_jwt_utils.seal_integrated(eat_jws.encode("ascii"), header, recipient_hpke, hpke_info=hpke_info)
     encoded_jwe = cwt_jwt_utils.b64u_encode(jwe.encode("ascii"))
     cmw_der = encode_cmw_json_record(CMW_MEDIA_JOSE, encoded_jwe, CMW_TYPE_JOSE)
     statement = prepare_attestation_statement(univ.ObjectIdentifier(statement_oid), cmw_der)
@@ -175,9 +176,12 @@ def build_evidence_bundle(
     nonce: bytes,
     kid: str = DEFAULT_KID,
     statement_oid: str = EVIDENCE_ENC_OID,
+    hpke_info: bytes = b"",
 ) -> bytes:
     """Build the DER ``AttestationBundle`` carrying one JOSE-HPKE-encrypted evidence statement."""
-    statement = build_evidence_statement(eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid)
+    statement = build_evidence_statement(
+        eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid, hpke_info=hpke_info
+    )
     return _evidence_bundle_der(statement)
 
 
@@ -191,6 +195,7 @@ def sign_and_build_evidence_bundle(
     nonce: bytes,
     kid: str = DEFAULT_KID,
     statement_oid: str = EVIDENCE_ENC_OID,
+    hpke_info: bytes = b"",
 ) -> bytes:
     """Sign an EAT-JWS over *claims* (binding *nonce*) then build the encrypted bundle.
 
@@ -199,7 +204,9 @@ def sign_and_build_evidence_bundle(
     """
     eat_claims = {**claims, "eat_nonce": cwt_jwt_utils.b64u_encode(nonce)}
     eat_jws = cwt_jwt_utils.sign_es256(eat_claims, signer_key)
-    return build_evidence_bundle(eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid)
+    return build_evidence_bundle(
+        eat_jws, recipient_hpke, nonce=nonce, kid=kid, statement_oid=statement_oid, hpke_info=hpke_info
+    )
 
 
 # pylint: enable=too-many-arguments
@@ -221,6 +228,9 @@ def generate_cwt_evidence(
     eat_jws: str | bytes,
     recipient_hpke: ec.EllipticCurvePublicKey,
     signer_key: ec.EllipticCurvePrivateKey,
+    *,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
 ) -> bytes:
     """Return ``DER(CMW cbor)`` carrying COSE-HPKE-encrypted CWT evidence.
 
@@ -228,7 +238,9 @@ def generate_cwt_evidence(
     opaque result directly into ``AttestationStatement.stmt``.
     """
     eat_jws_bytes = eat_jws.encode("ascii") if isinstance(eat_jws, str) else bytes(eat_jws)
-    cose = cwt_jwt_utils.seal_cose_hpke_evidence(eat_jws_bytes, recipient_hpke, signing_key=signer_key)
+    cose = cwt_jwt_utils.seal_cose_hpke_evidence(
+        eat_jws_bytes, recipient_hpke, signing_key=signer_key, hpke_info=hpke_info, external_aad=external_aad
+    )
     cmw_der = encode_cmw_json_record(CMW_MEDIA_COSE, cose, cbor=True)
     log_statement("COSE-HPKE CWT evidence", cmw_der)
     return cmw_der
@@ -240,6 +252,8 @@ def build_cose_evidence_statement(
     *,
     signer_key: ec.EllipticCurvePrivateKey,
     statement_oid: str = COSE_EVIDENCE_ENC_OID,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
 ):
     """Sign-then-encrypt *eat_jws* for *recipient_hpke* and wrap it as one ``AttestationStatement``.
 
@@ -248,7 +262,7 @@ def build_cose_evidence_statement(
     the COSE-HPKE-0 seal of a nested ``COSE_Sign1`` (over the CWT-mapped claims of *eat_jws*,
     signed under *signer_key*).  *recipient_hpke* MUST be an EC P-256 public key (HPKE-0's KEM).
     """
-    cmw_der = generate_cwt_evidence(eat_jws, recipient_hpke, signer_key)
+    cmw_der = generate_cwt_evidence(eat_jws, recipient_hpke, signer_key, hpke_info=hpke_info, external_aad=external_aad)
     return prepare_attestation_statement(univ.ObjectIdentifier(statement_oid), cmw_der)
 
 
@@ -258,10 +272,17 @@ def build_cose_evidence_bundle(
     *,
     signer_key: ec.EllipticCurvePrivateKey,
     statement_oid: str = COSE_EVIDENCE_ENC_OID,
+    hpke_info: bytes = b"",
+    external_aad: bytes = b"",
 ) -> bytes:
     """Build the DER ``AttestationBundle`` carrying one COSE-HPKE-encrypted evidence statement."""
     statement = build_cose_evidence_statement(
-        eat_jws, recipient_hpke, signer_key=signer_key, statement_oid=statement_oid
+        eat_jws,
+        recipient_hpke,
+        signer_key=signer_key,
+        statement_oid=statement_oid,
+        hpke_info=hpke_info,
+        external_aad=external_aad,
     )
     return _evidence_bundle_der(statement)
 

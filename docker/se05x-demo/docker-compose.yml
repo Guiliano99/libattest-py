@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+# SE05x attestation demo: the patched wolfSSL SE050 simulator and a libattest client.
+#
+#   make se05x-build   # build both images (the simulator compiles from pinned sources)
+#   make se05x-test    # provision, run the live tests, check the key-per-start wiring
+#   make se05x-demo    # provision, then run the narrated RA flow
+#   make se05x-down    # stop the stack and drop the trust volume
+#
+# Services:
+#   se05xsim   - the simulator: T=1 over TCP on port 8050, on the compose network only.
+#   provision  - one-shot: mints an ephemeral demo root CA, stores the attestation
+#                certificate in the SE (0xF0000013) and writes only the root
+#                certificate to the `trust` volume. The root private key dies with it.
+#   test       - pytest against the live simulator (one-shot).
+#   demo       - the narrated RA flow (profile: demo).
+#
+# The simulator image is GPL-3.0-or-later: build it locally, never push it.
+
+services:
+  se05xsim:
+    build:
+      context: .
+      dockerfile: Dockerfile.se05xsim
+    image: libattest-se05xsim:local
+    init: true
+    # No SE050_SIM_ATTEST_SEED, and none taken from the host shell: a random attestation
+    # key on every start (check_key_per_start.py tests exactly this). A seed derives a
+    # fixed key that anyone who knows it can forge Evidence with: tests only, via docker run.
+    # No host port by default. To reach the simulator from the host, add:
+    # ports:
+    #   - "127.0.0.1:${SE05XSIM_PORT:-18050}:8050"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8050"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  provision:
+    build:
+      context: ../..
+      dockerfile: docker/se05x-demo/Dockerfile.client
+    image: libattest-se05x-client:local
+    command: ["python", "docker/se05x-demo/provision.py"]
+    environment: &se05x-env
+      SE05X_HOST: se05xsim
+      SE05X_PORT: "8050"
+      TRUST_DIR: /trust
+    volumes:
+      - ../..:/workspace:ro
+      - trust:/trust
+    depends_on:
+      se05xsim:
+        condition: service_healthy
+
+  test:
+    image: libattest-se05x-client:local
+    # The source tree is read-only: no pytest cache.
+    command: ["python", "-m", "pytest", "-p", "no:cacheprovider", "docker/se05x-demo/test_se05x_demo.py", "-v"]
+    environment: *se05x-env
+    volumes:
+      - ../..:/workspace:ro
+      - trust:/trust:ro
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  demo:
+    image: libattest-se05x-client:local
+    command: ["python", "docker/se05x-demo/se05x_demo.py"]
+    environment: *se05x-env
+    volumes:
+      - ../..:/workspace:ro
+      - trust:/trust:ro
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+    profiles:
+      - demo
+
+volumes:
+  trust:

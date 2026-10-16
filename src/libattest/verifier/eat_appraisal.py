@@ -93,7 +93,17 @@ def check_nonce_and_claim(claims: dict[str, Any], expected_nonce: bytes, referen
 
     ``claims`` is an already signature-verified EAT-JWT claims dict (or, for the
     HPKE inner step, the CMW protected header). Returns ``(ear_status, reason)``.
+
+    Both inputs must be non-empty. An absent ``eat_nonce`` decodes to ``b""`` and an
+    absent ``mock_claim`` defaults to ``""``, so empty expectations would compare
+    equal to a claimless token and appraise it as affirming — the checks below make
+    a missing expectation a rejection rather than a vacuous pass.
     """
+    if not expected_nonce:
+        return "contraindicated", "no RA-issued nonce to appraise freshness against"
+    if not reference_mock_claim:
+        return "contraindicated", "no reference value configured for mock_claim"
+
     if eat_nonce_bytes(claims.get("eat_nonce", "")) != expected_nonce:
         return "contraindicated", "nonce mismatch (stale or replayed evidence)"
 

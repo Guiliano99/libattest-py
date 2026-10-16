@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# client image -- libattest's runtime and test dependencies, nothing else.
+#
+# The SE05x client is pure Python (T=1 over TCP), so no native stack is needed.
+# The libattest source tree is bind-mounted read-only at /workspace by
+# docker-compose.yml (PYTHONPATH=/workspace/src); rebuild only when the
+# dependencies in pyproject.toml change. Build context: the repository root.
+#
+# Base: python:3.13-slim, pinned to the multi-arch index digest resolved on
+# 2026-09-24 with `docker buildx imagetools inspect python:3.13-slim`.
+# =============================================================================
+FROM python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
+
+# git: keyutils-py, pyhpke and cwt are git+https dependencies.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# [project].dependencies plus the "testing" extra, read from pyproject.toml.
+COPY pyproject.toml /tmp/pyproject.toml
+RUN python -c "import tomllib; p = tomllib.load(open('/tmp/pyproject.toml', 'rb'))['project']; print('\n'.join(p['dependencies'] + p['optional-dependencies']['testing']))" > /tmp/requirements.txt \
+ && pip install --no-cache-dir -r /tmp/requirements.txt \
+ && rm /tmp/pyproject.toml /tmp/requirements.txt
+
+# Non-root, uid 1000 like the TPM demo's client: the bind-mounted source tree
+# may hold owner-only (mode 600) files, which only the default host user can
+# read. /trust is the mount point of the named `trust` volume, which takes this
+# directory's owner when the volume is first created.
+RUN useradd --uid 1000 --create-home app && install -d -o app /trust
+USER 1000:1000
+
+WORKDIR /workspace
+# Read-only source tree: no bytecode. Unbuffered: log lines stay in order with the narrative.
+ENV PYTHONPATH=/workspace/src \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+CMD ["bash"]

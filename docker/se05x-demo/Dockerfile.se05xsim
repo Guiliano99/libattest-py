@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 Siemens AG
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# se05xsim image -- wolfSSL's SE050 simulator (`tcp_server`, T=1 over TCP on
+# port 8050) taught NXP's applet-7.2 attested read.
+#
+# Built from source, every input pinned:
+#   1. wolfSSL/simulators at upstream commit ee28091, fetched by SHA;
+#   2. `git am` of sim/0001 and sim/0002: the open upstream PR #19 (per-object
+#      policy and origin, ReadObjectAttributes), vendored so the build never
+#      fetches the moving PR branch;
+#   3. `git apply` of sim/0003: our attestation patch (attested ReadObject,
+#      GetTimestamp, the provisioned attestation key 0xF0000012 and chip id
+#      0x7FFF0206, policy checks, tests);
+#   4. the LinuxJedi/nxp-se050 driver by SHA: the crate's dev-dependency
+#      (`path = "../nxp-se050/se050"`), which cargo resolves even for a plain
+#      `cargo build`;
+#   5. sim/Cargo.lock (upstream commits none), enforced with --locked.
+# See sim/README.md for the patches' checksums and how to refresh them.
+#
+# Licence: this Dockerfile is Apache-2.0. The simulator and the three patches
+# are GPL-3.0-or-later (they modify SE050Sim), and so is the image. Build it
+# locally; never push it to a registry.
+#
+#   docker build -f docker/se05x-demo/Dockerfile.se05xsim --target test docker/se05x-demo
+#   docker build -f docker/se05x-demo/Dockerfile.se05xsim -t libattest-se05xsim:local docker/se05x-demo
+#
+# Runtime: SE050_SIM_ATTEST_SEED unset or empty gives a random attestation key
+# on every start (the default); a non-empty value derives a deterministic key.
+# SE050_SIM_APPLET selects the applet personality (empty = SE051 7.2.0). The
+# object store lives in memory, so every start is a fresh chip.
+# =============================================================================
+
+# Builder on bookworm to match the runtime's glibc 2.36 (rust:latest is newer).
+FROM rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
+
+ARG SIM_REPO=https://github.com/wolfSSL/simulators
+ARG SIM_SHA=ee280919229cceb7a5504b5dd40af90d8c0731cb
+ARG DRIVER_REPO=https://github.com/LinuxJedi/nxp-se050
+ARG DRIVER_SHA=af49819d1e09e25dfa438a8858f7ed89cd53944a
+
+WORKDIR /build
+COPY sim/0001-Extend-SE050Sim-for-SE05x-API-regression-coverage.patch \
+     sim/0002-Extend-SE05x-API-regression-coverage.patch \
+     sim/0003-se05x-attestation.patch \
+     /build/patches/
+RUN git init -q sim \
+ && git -C sim fetch -q --depth 1 "$SIM_REPO" "$SIM_SHA" \
+ && git -C sim checkout -q FETCH_HEAD \
+ && git -C sim -c user.name=libattest-build -c user.email=build@localhost \
+      am -q /build/patches/0001-*.patch /build/patches/0002-*.patch \
+ && git -C sim apply --check /build/patches/0003-se05x-attestation.patch \
+ && git -C sim apply /build/patches/0003-se05x-attestation.patch \
+ && git init -q sim/SE050Sim/nxp-se050 \
+ && git -C sim/SE050Sim/nxp-se050 fetch -q --depth 1 "$DRIVER_REPO" "$DRIVER_SHA" \
+ && git -C sim/SE050Sim/nxp-se050 checkout -q FETCH_HEAD
+
+COPY sim/Cargo.lock sim/SE050Sim/se050-sim/Cargo.lock
+RUN cargo build --release --locked --bin tcp_server \
+      --manifest-path sim/SE050Sim/se050-sim/Cargo.toml
+
+# The crate's full suite: upstream, PR #19 and attestation tests. One thread,
+# because tests share process env vars (applet personality, SCP03 keys).
+FROM builder AS test
+RUN cargo test --locked --all-targets \
+      --manifest-path sim/SE050Sim/se050-sim/Cargo.toml -- --test-threads=1
+
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+RUN useradd --uid 10050 --no-create-home --shell /usr/sbin/nologin se050
+COPY --from=builder /build/sim/SE050Sim/se050-sim/target/release/tcp_server /usr/local/bin/tcp_server
+USER 10050
+ENV SE050_SIM_PORT=8050
+EXPOSE 8050
+CMD ["tcp_server"]

@@ -40,13 +40,33 @@ from libattest.formats.key_attest_pop import (
     KeyAttestResp,
     resolve_key_attest_evidence_oid,
 )
+from libattest.formats.se05x.structures import (
+    Se05xAttestEvidence,
+    id_se05x_attest_request,
+    id_se05x_attest_response,
+    id_se05x_attest_statement,
+)
 from libattest.formats.tpm import (
+    IakKeyAttestEvidence,
+    IakKeyAttestReqInfo,
+    IakKeyAttestRespInfo,
+    LdevidKeyAttestEvidence,
+    LdevidKeyAttestReqInfo,
+    LdevidKeyAttestRespInfo,
     TPM20QuoteReqInfoASN1,
     TPM20QuoteRespInfoASN1,
+    id_tcg_attest_certify,
+    id_tcg_attest_quote,
     id_tpm20_quote_req,
     id_tpm20_quote_res,
+    id_tpm_iak_key_attest_request,
+    id_tpm_iak_key_attest_response,
+    id_tpm_iak_key_attest_statement,
+    id_tpm_key_attest_req,
+    id_tpm_ldevid_key_attest_request,
+    id_tpm_ldevid_key_attest_response,
+    id_tpm_ldevid_key_attest_statement,
 )
-from libattest.formats.tpm.tcg import id_tcg_attest_certify, id_tcg_attest_quote
 
 StatementValue: TypeAlias = bytes
 StatementDecoder: TypeAlias = Callable[[StatementValue], object]
@@ -55,16 +75,28 @@ StatementStructure: TypeAlias = type[base.Asn1Item]
 NONCE_REQUEST_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     str(id_tpm20_quote_req): TPM20QuoteReqInfoASN1,
     resolve_key_attest_evidence_oid(): KeyAttestChall,
+    # v6 DevID key attestation (ADR-0001). The structures and OIDs are registered so
+    # the wire types are selectable; the RA profile and verifier that would drive
+    # them are not written yet, so v5 above is still the wired profile.
+    str(id_tpm_iak_key_attest_request): IakKeyAttestReqInfo,
+    str(id_tpm_ldevid_key_attest_request): LdevidKeyAttestReqInfo,
 }
 
 NONCE_RESPONSE_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     str(id_tpm20_quote_res): TPM20QuoteRespInfoASN1,
     resolve_key_attest_evidence_oid(): KeyAttestResp,
     EVIDENCE_ENC_PARAMS_OID: rfc5280.SubjectPublicKeyInfo,
+    str(id_tpm_iak_key_attest_response): IakKeyAttestRespInfo,
+    str(id_tpm_ldevid_key_attest_response): LdevidKeyAttestRespInfo,
 }
 
 ATTESTATION_STATEMENT_STRUCTURES: dict[str, StatementStructure] = {
     resolve_key_attest_evidence_oid(): KeyAttestEvidence,
+    str(id_tpm_iak_key_attest_statement): IakKeyAttestEvidence,
+    str(id_tpm_ldevid_key_attest_statement): LdevidKeyAttestEvidence,
+    # SE05x attested read. Its request/response OIDs carry no reqInfo/respInfo, so
+    # they have no entry in the nonce maps above.
+    str(id_se05x_attest_statement): Se05xAttestEvidence,
     resolve_evidence_enc_oid(): univ.OctetString,
     resolve_cose_evidence_enc_oid(): CMW,
     str(ID_PE_CMW): CMW,
@@ -147,12 +179,21 @@ _STMT_OID_BY_NAME: dict[str, str] = {
     "jose-hpke-evidence": resolve_evidence_enc_oid(),
     "cose-hpke-evidence": resolve_cose_evidence_enc_oid(),
     "tcg-attest-quote": str(id_tcg_attest_quote),
+    "tpm-iak-key-attest": str(id_tpm_iak_key_attest_statement),
+    "tpm-ldevid-key-attest": str(id_tpm_ldevid_key_attest_statement),
+    "se05x-attest": str(id_se05x_attest_statement),
 }
 
 _NONCE_REQUEST_OID_BY_NAME: dict[str, str] = {
     "tpm-quote": str(id_tpm20_quote_req),
     "tpm-quote-request": str(id_tpm20_quote_req),
     "key-attest": resolve_key_attest_evidence_oid(),
+    # The certify-leg request type the client sends at GenM; distinct from the
+    # key-attest *evidence* OID above, which selects the statement syntax.
+    "key-attest-request": str(id_tpm_key_attest_req),
+    "tpm-iak-key-attest-request": str(id_tpm_iak_key_attest_request),
+    "tpm-ldevid-key-attest-request": str(id_tpm_ldevid_key_attest_request),
+    "se05x-attest-request": str(id_se05x_attest_request),
     "jose-hpke-evidence-params": EVIDENCE_ENC_PARAMS_OID,
 }
 
@@ -161,6 +202,9 @@ _NONCE_RESPONSE_OID_BY_NAME: dict[str, str] = {
     "tpm-quote-response": str(id_tpm20_quote_res),
     "tpm-quote-result": str(id_tpm20_quote_res),
     "key-attest": resolve_key_attest_evidence_oid(),
+    "tpm-iak-key-attest-response": str(id_tpm_iak_key_attest_response),
+    "tpm-ldevid-key-attest-response": str(id_tpm_ldevid_key_attest_response),
+    "se05x-attest-response": str(id_se05x_attest_response),
     "jose-hpke-evidence-params": EVIDENCE_ENC_PARAMS_OID,
 }
 

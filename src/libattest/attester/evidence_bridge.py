@@ -50,7 +50,7 @@ from libattest.formats.key_attest_pop import (
     prepare_key_attest_chall,
     prepare_key_attest_evidence,
 )
-from libattest.formats.tpm.tcg import prepare_tcg_attest_certify
+from libattest.formats.tpm import prepare_tcg_attest_certify
 from libattest.stmt_log import log_statement
 
 _KINDS = ("quote", "certify", "key-attest")

@@ -139,6 +139,15 @@ class NonceStore:
         )
         self._nonce_bytes = int(nonce_bytes or DEFAULT_NONCE_BYTES)
 
+    @property
+    def ttl_seconds(self) -> int:
+        """Return the lifetime this store actually enforces on an issued nonce.
+
+        Public because the RA advertises it: a ``NonceResponse.expiry`` that does not
+        match the TTL being enforced tells the attester the wrong deadline.
+        """
+        return self._ttl
+
     # ── Issuance ──────────────────────────────────────────────────────────────
 
     def issue(

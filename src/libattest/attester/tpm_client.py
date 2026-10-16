@@ -49,6 +49,16 @@ from pyasn1.codec.ber import decoder as ber_decoder
 from pyasn1.type import univ
 
 from libattest._pytss import require_pytss
+
+# The AK (restricted-signing) template and the hash-name->alg map live in
+# tpm_utils — the single source for TPM key templates and hash ids.  Imported
+# under their former private names so the existing call sites stay unchanged.
+from libattest.formats.tpm.tpm_utils import (
+    HASH_ALG_IDS as _HASHES,
+)
+from libattest.formats.tpm.tpm_utils import (
+    ak_template as _ak_template,
+)
 from libattest.formats.tpm.tpms_attest import (
     TPM_GENERATED_VALUE,
     TPM_ST_ATTEST_QUOTE,
@@ -74,8 +84,6 @@ from tpm2_pytss import (  # noqa: E402
     TPM2B_NAME,
     TPM2B_PRIVATE,
     TPM2B_PUBLIC,
-    TPMA_OBJECT,
-    TPMT_PUBLIC,
     TPMT_SIG_SCHEME,
     TPMT_SIGNATURE,
     TPMT_TK_HASHCHECK,
@@ -159,60 +167,9 @@ def _read_pcr_values_raw(ectx: ESAPI, pcr_selection: str) -> bytes:
 # ``libattest.formats.tpm.tpms_attest`` (the single source of truth) so the
 # attester and verifier never define them independently.
 
-# Friendly hash name -> TPM algorithm id (Part 2 / TCG Algorithm Registry).
-_HASHES = {
-    "sha1": TPM2_ALG.SHA1,
-    "sha256": TPM2_ALG.SHA256,
-    "sha384": TPM2_ALG.SHA384,
-    "sha512": TPM2_ALG.SHA512,
-}
+# Reverse map (alg id -> friendly name), derived from the single hash-name source
+# imported from tpm_utils; used to label the quote's PCR bank in respInfo.
 _ALG_NAMES = {int(v): k for k, v in _HASHES.items()}
-
-
-# --------------------------------------------------------------------------- #
-# Templates
-# --------------------------------------------------------------------------- #
-def _ak_template(alg_family: str, hash_alg: str) -> TPM2B_PUBLIC:
-    """Build the public template for an Attestation Key.
-
-    An AK is a *restricted signing* key (``RESTRICTED | SIGN_ENCRYPT``).
-    ``restricted`` is the property that makes the TPM enforce the
-    ``TPM_GENERATED_VALUE`` rule, so the AK can only sign digests the TPM itself
-    produced — never attacker-chosen bytes shaped like an attestation.  The
-    signing scheme (and therefore the hash used by ``TPM2_Quote``) is fixed here
-    at creation time.
-
-    The tpm2-tools-style algorithm string has three colon-separated parts,
-    ``type:scheme:symmetric``.  The trailing ``:null`` forces the symmetric
-    field to ``TPM_ALG_NULL`` — mandatory for a sign-only key (otherwise
-    tpm2-pytss would default a restricted key to AES, which the TPM rejects for
-    a signing key).
-    """
-    if hash_alg not in _HASHES:
-        raise ValueError(f"unsupported hash {hash_alg!r}; pick one of {list(_HASHES)}")
-
-    attrs = (
-        TPMA_OBJECT.FIXEDTPM  # key never leaves this TPM
-        | TPMA_OBJECT.FIXEDPARENT  # cannot be re-parented
-        | TPMA_OBJECT.SENSITIVEDATAORIGIN  # TPM generated the private part
-        | TPMA_OBJECT.USERWITHAUTH  # USER role authorized by the auth value
-        | TPMA_OBJECT.RESTRICTED  # restricted ...
-        | TPMA_OBJECT.SIGN_ENCRYPT  # ... signing key  ==  an Attestation Key
-    )
-
-    if alg_family == "rsa":
-        spec = f"rsa2048:rsassa-{hash_alg}:null"
-    elif alg_family == "ecc":
-        spec = f"ecc256:ecdsa-{hash_alg}:null"
-    else:
-        raise ValueError("alg_family must be 'rsa' or 'ecc'")
-
-    public_area = TPMT_PUBLIC.parse(
-        alg=spec,
-        objectAttributes=attrs,
-        nameAlg=_HASHES[hash_alg],
-    )
-    return TPM2B_PUBLIC(publicArea=public_area)
 
 
 # --------------------------------------------------------------------------- #

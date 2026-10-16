@@ -6,6 +6,7 @@
 
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Union
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ from urllib.parse import urlparse
 from pyasn1.type import univ
 
 from libattest.formats.csrattest import AttestationBundle, decode_attestation_bundle
+from libattest.formats.media_types import base_media_type, media_type_set
 from libattest.types import BundleVerifyResult, VerifyResult
 from libattest.verifier.base import AttestationVerifier
 from libattest.verifier.endpoints import VerifierEndpointConfig
@@ -65,6 +67,9 @@ class VerifierRoute:
         * a base URL string (``"https://verifier.example.com:8443"``)
           — used for hint matching; URL builders parse it on demand.
         * ``None`` — the route is local-only (no remote endpoint).
+    accepts:
+        Media types this route's verifier will appraise.  Empty means the route
+        makes no claim and any media type is allowed through to it.
 
     """
 
@@ -72,10 +77,17 @@ class VerifierRoute:
     verifier: AttestationVerifier
     evidence_types: set[str] = field(default_factory=set)
     endpoint: EndpointLike = None
+    accepts: frozenset[str] = frozenset()
 
     def matches_evidence_type(self, evidence_type: str | None) -> bool:
         """Return whether this route is registered for the evidence type."""
         return evidence_type is not None and evidence_type in self.evidence_types
+
+    def accepts_media_type(self, media_type: str | None) -> bool:
+        """Return whether this route will appraise *media_type* (parameters ignored)."""
+        if media_type is None or not self.accepts:
+            return True
+        return base_media_type(media_type) in self.accepts
 
     def matches_hint(self, hint: str | None) -> bool:
         """Return whether a hint selects this route."""
@@ -184,6 +196,7 @@ class VerifierRouter:
         *,
         evidence_types: list[str | univ.ObjectIdentifier] | tuple[str | univ.ObjectIdentifier, ...] = (),
         endpoint: EndpointLike = None,
+        accepts: str | Iterable[str] | None = None,
         default: bool = False,
     ) -> None:
         """Register one verifier route.
@@ -192,6 +205,15 @@ class VerifierRouter:
         string, or ``None``.  When set, the resulting :class:`VerifierRoute`
         exposes ``new_session_url()`` and ``submit_evidence_url(session_id)``
         for the Veraison challenge-response scheme.
+
+        ``accepts`` declares the media types the route will appraise — a single media
+        type as a string, or several as any iterable.  It defaults to whatever *verifier*
+        declares (its ``accepts`` set, else its ``media_type``), and is empty — meaning
+        "no claim, allow anything" — for a verifier that declares neither.
+
+        ``default`` must be passed explicitly to make this the fallback route.  It is
+        **not** inferred from being registered first: an implicit default sends evidence
+        of an unrecognised type to an arbitrary verifier, which is a fail-open dispatch.
         """
         evidence_type_set = {str(evidence_type) for evidence_type in evidence_types}
         self._routes[name] = VerifierRoute(
@@ -199,8 +221,9 @@ class VerifierRouter:
             verifier=verifier,
             evidence_types=evidence_type_set,
             endpoint=endpoint,
+            accepts=media_type_set(accepts) if accepts is not None else _declared_media_types(verifier),
         )
-        if default or self._default_route_name is None:
+        if default:
             self._default_route_name = name
 
     def _evict_expired_nonces(self) -> None:
@@ -217,30 +240,53 @@ class VerifierRouter:
         evidence_type: str | univ.ObjectIdentifier | None = None,
         hint: str | None = None,
         nonce: bytes | None = None,
+        media_type: str | None = None,
     ) -> VerifierRoute:
-        """Resolve a verifier route using nonce, hint, evidence type, then default."""
+        """Resolve a verifier route using nonce, hint, evidence type, then default.
+
+        *media_type*, when the caller knows it from the wire, is a gate rather than a
+        preference: nonce and hint are explicit bindings, so a route selected by one
+        that does not accept the media type is an error, not a reason to look further.
+        Evidence-type matching does consider it, because several routes may legitimately
+        register the same OID for different renderings of it.
+        """
         self._evict_expired_nonces()
 
         if nonce is not None:
             entry = self._nonce_routes.get(nonce)
             if entry is not None:
-                return self._routes[entry.route_name]
+                return self._require_media_type(self._routes[entry.route_name], media_type)
 
         self.policy.validate_hint(hint)
 
         for route in self._routes.values():
             if route.matches_hint(hint):
-                return route
+                return self._require_media_type(route, media_type)
 
         evidence_type_text = str(evidence_type) if evidence_type is not None else None
         for route in self._routes.values():
-            if route.matches_evidence_type(evidence_type_text):
+            if route.matches_evidence_type(evidence_type_text) and route.accepts_media_type(media_type):
                 return route
 
         if self._default_route_name is not None:
-            return self._routes[self._default_route_name]
+            return self._require_media_type(self._routes[self._default_route_name], media_type)
 
-        raise VerifierRouteError("No verifier route is registered")
+        if not self._routes:
+            raise VerifierRouteError("No verifier route is registered")
+        raise VerifierRouteError(
+            f"No verifier route matches (evidence_type={evidence_type_text!r}, hint={hint!r}, "
+            f"media_type={media_type!r}) and no default route was registered; "
+            f"pass default=True on the route that should catch unmatched evidence"
+        )
+
+    @staticmethod
+    def _require_media_type(route: VerifierRoute, media_type: str | None) -> VerifierRoute:
+        """Return *route*, or raise when it does not accept *media_type*."""
+        if route.accepts_media_type(media_type):
+            return route
+        raise VerifierRouteError(
+            f"Route {route.name!r} does not accept media type {media_type!r} (accepts {sorted(route.accepts)})"
+        )
 
     def get_nonce(
         self,
@@ -269,7 +315,7 @@ class VerifierRouter:
         hint: str | None = None,
     ) -> VerifyResult:
         """Verify evidence with the route selected for the nonce or metadata."""
-        route = self.resolve(evidence_type=evidence_type, hint=hint, nonce=nonce)
+        route = self.resolve(evidence_type=evidence_type, hint=hint, nonce=nonce, media_type=media_type)
         result = route.verifier.verify_token(token_bytes, media_type, nonce)
         if nonce is not None:
             self._nonce_routes.pop(nonce, None)
@@ -348,10 +394,13 @@ class VerifierRouter:
             media_type = media_types[i] if media_types else None
 
             try:
+                # Only a caller-supplied media type is a wire fact; the fallback below is
+                # read off the verifier itself, so gating on it would be a tautology.
                 route = self.resolve(
                     evidence_type=stmt_oid,
                     hint=hint,
                     nonce=nonce,
+                    media_type=media_type,
                 )
             except VerifierRouteError as exc:
                 logger.warning("Statement %d (oid=%s): no route — %s", i, stmt_oid, exc)
@@ -379,6 +428,11 @@ class VerifierRouter:
             per_statement=tuple(verdicts),
             routes=tuple(route_names),
         )
+
+
+def _declared_media_types(verifier: AttestationVerifier) -> frozenset[str]:
+    """Return the media types *verifier* declares, or an empty set if it declares none."""
+    return media_type_set(getattr(verifier, "accepts", None) or getattr(verifier, "media_type", None))
 
 
 def _is_url_hint(hint: str) -> bool:

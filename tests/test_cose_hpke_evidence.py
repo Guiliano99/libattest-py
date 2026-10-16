@@ -21,7 +21,11 @@ from cwt.exceptions import DecodeError, VerifyError
 
 from libattest.attester import evidence_bridge
 from libattest.formats.eat_ear import cwt_jwt_utils
-from libattest.formats.eat_ear.cwt_jwt_utils import open_cose_hpke_evidence, seal_cose_hpke_evidence
+from libattest.formats.eat_ear.cwt_jwt_utils import (
+    open_cose_hpke_evidence,
+    open_unsigned_cose_hpke_evidence,
+    seal_cose_hpke_evidence,
+)
 
 STATIC_EAR_JWT = (
     b"eyJhbGciOiJFUzI1NiIsImtpZCI6ImF0dC1zdGF0aWMtMDEiLCJ0eXAiOiJKV1QifQ."
@@ -50,7 +54,7 @@ def test_encrypt_only_roundtrip() -> None:
     recipient_priv, recipient_pub = _recipient_keypair()
 
     sealed = seal_cose_hpke_evidence(STATIC_EAR_JWT, recipient_pub)
-    claims = open_cose_hpke_evidence(sealed, recipient_priv)
+    claims = open_unsigned_cose_hpke_evidence(sealed, recipient_priv)
 
     assert claims["sub"] == "device-0007"
     assert claims["submods"]["ATG_PLUGIN"]["ear.status"] == "affirming"
@@ -94,7 +98,7 @@ def test_encrypt_only_wrong_recipient_key_rejected() -> None:
 
     sealed = seal_cose_hpke_evidence(STATIC_EAR_JWT, recipient_pub)
     with pytest.raises(DecodeError):
-        open_cose_hpke_evidence(sealed, wrong_priv)
+        open_unsigned_cose_hpke_evidence(sealed, wrong_priv)
 
 
 def test_sign_with_non_p256_key_uses_its_own_alg() -> None:

@@ -4,12 +4,17 @@
 
 """Minimal attester-side client logic."""
 
+from __future__ import annotations
+
 import logging
-from collections.abc import Collection
-from typing import Protocol
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from pyasn1.type import univ
 
+from libattest.attester.claim_release import ClaimReleasePolicy, release_claims
+from libattest.attester.verifier_info import VerifierInfo, parse_verifier_info
 from libattest.formats.csrattest import (
     AttestationBundle,
     NonceResponse,
@@ -22,6 +27,44 @@ from libattest.formats.csrattest.csr_attest_structures import pem_chain_to_cmp_c
 from libattest.types import AttestResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EvidenceRequest:
+    """Everything the attester knows when it is asked to produce one Evidence statement.
+
+    A provider used to be handed a bare nonce, which is only enough for Evidence whose
+    every other parameter is compiled in.  It is not enough to encrypt Evidence to a
+    verifier whose key arrives at run time, to honour the PCR set the RA actually
+    promised to appraise, or to decide what this particular verifier is allowed to
+    learn — all three are properties of *this exchange*, not of the provider.
+
+    Attributes
+    ----------
+    nonce:
+        The RA-issued freshness nonce, or ``None`` when the RA asked for none.
+    verifier_info:
+        What the ``NonceResponse`` provisioned — see
+        :class:`~libattest.attester.verifier_info.VerifierInfo`.
+    verifier_id:
+        The deployment's name for the verifier, when the attester knows it; the key
+        :class:`~libattest.attester.claim_release.ClaimReleasePolicy` decides against.
+    media_type:
+        The media type the Evidence should be produced in, when the caller knows it.
+    claim_policy:
+        What this attester will release to this verifier.  ``None`` releases everything.
+
+    """
+
+    nonce: bytes | None = None
+    verifier_info: VerifierInfo | None = None
+    verifier_id: str | None = None
+    media_type: str | None = None
+    claim_policy: ClaimReleasePolicy | None = None
+
+    def release(self, claims: Mapping[str, Any]) -> dict[str, Any]:
+        """Return the subset of *claims* this request's policy releases."""
+        return release_claims(claims, self.claim_policy, verifier_id=self.verifier_id)
 
 
 class AttesterProvider(Protocol):
@@ -56,8 +99,7 @@ def resolve_evidence_generation_inputs(
     response_oid = nonce_response_type_oid(nonce_response)
     if response_oid is None:
         raise ValueError(
-            "evidence OID is required when a CMP NonceResponse has no type field "
-            "and multiple providers are registered"
+            "evidence OID is required when a CMP NonceResponse has no type field and multiple providers are registered"
         )
     raise ValueError(
         "evidence OID is required when multiple providers are registered; "
@@ -81,15 +123,34 @@ class AttesterClient:
         """Register a provider for one evidence type OID."""
         self._providers[str(oid)] = provider
 
-    def generate_evidence(self, oid: str | univ.ObjectIdentifier, nonce: bytes | None = None) -> AttestResult:
-        """Generate evidence for the selected OID."""
+    def generate_evidence(
+        self,
+        oid: str | univ.ObjectIdentifier,
+        nonce: bytes | None = None,
+        *,
+        request: EvidenceRequest | None = None,
+    ) -> AttestResult:
+        """Generate evidence for the selected OID.
+
+        A provider that accepts the wider :class:`EvidenceRequest` — it exposes
+        ``generate_evidence_for`` — is given the whole exchange; one that implements
+        only the original ``generate_evidence(nonce)`` still sees just the nonce.  The
+        capability is duck-typed rather than declared, exactly as the RA does for
+        verifiers, so no existing provider has to change to keep working.
+        """
         oid_text = str(oid)
         try:
             provider = self._providers[oid_text]
         except KeyError as exc:
             raise KeyError(f"No attester provider registered for OID {oid_text!r}") from exc
 
-        result = provider.generate_evidence(nonce)
+        generate_for: Callable[[EvidenceRequest], AttestResult] | None = getattr(
+            provider, "generate_evidence_for", None
+        )
+        if callable(generate_for):
+            result = generate_for(request if request is not None else EvidenceRequest(nonce=nonce))
+        else:
+            result = provider.generate_evidence(request.nonce if request is not None else nonce)
         if result.oid != oid_text:
             raise ValueError(f"Provider for OID {oid_text!r} returned evidence for {result.oid!r}")
         return result
@@ -116,15 +177,28 @@ class AttesterClient:
         self,
         nonce_response: NonceResponse,
         oid: str | univ.ObjectIdentifier | None = None,
+        *,
+        verifier_id: str | None = None,
+        claim_policy: ClaimReleasePolicy | None = None,
     ) -> AttestResult:
         """Generate evidence from a decoded CMP attestation freshness response.
 
         *oid* is an Evidence statement OID.  It is required when multiple
         providers are registered because ``respTypeInfo.type`` selects the
         response payload syntax rather than Evidence.
+
+        The response's verifier information is parsed once here and handed to the
+        provider as an :class:`EvidenceRequest`, so a provider never has to re-decode
+        the ``NonceResponse`` to find the key it must encrypt to.
         """
         selected_oid, nonce = resolve_evidence_generation_inputs(nonce_response, self._providers, oid)
-        return self.generate_evidence(selected_oid, nonce)
+        request = EvidenceRequest(
+            nonce=nonce,
+            verifier_info=parse_verifier_info(nonce_response),
+            verifier_id=verifier_id,
+            claim_policy=claim_policy,
+        )
+        return self.generate_evidence(selected_oid, nonce, request=request)
 
     @staticmethod
     def prepare_attestation_bundle(result: AttestResult) -> AttestationBundle:

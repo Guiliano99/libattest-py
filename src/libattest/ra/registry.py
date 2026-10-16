@@ -60,8 +60,25 @@ class ProfileRegistry:
         Re-registering an already-known OID overwrites the prior profile (so a
         deployment can refine a built-in one).  Returns the registered profile
         for fluent use.
+
+        Replacing a built-in is intentional; *shadowing* a different attestation type
+        is almost never.  Two profiles that share a ``request_type_oid`` but not a
+        ``statement_oid`` mean the first one can no longer have a nonce issued for it —
+        its evidence arrives and finds no nonce filed under its statement OID — so that
+        case is logged as a warning rather than silently accepted.
         """
-        self._by_request[str(profile.request_type_oid)] = profile
+        request_oid = str(profile.request_type_oid)
+        displaced = self._by_request.get(request_oid)
+        if displaced is not None and str(displaced.statement_oid) != str(profile.statement_oid):
+            logger.warning(
+                "AttestationProfile for statement=%s now shadows statement=%s under request_type=%s; "
+                "nonces issued for that request type will be filed under the new statement OID only. "
+                "Give one of them a distinct request_type_oid to run both.",
+                profile.statement_oid,
+                displaced.statement_oid,
+                request_oid,
+            )
+        self._by_request[request_oid] = profile
         self._by_statement[str(profile.statement_oid)] = profile
         logger.info(
             "AttestationProfile registered: request_type=%s statement=%s",

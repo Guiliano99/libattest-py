@@ -17,7 +17,12 @@ import pytest
 from libattest import get_oid_by_name
 from libattest.formats.tpm import decode_tpm20_quote_resp_info
 from libattest.ra import RemoteAttestationEngine
-from libattest.ra.env import build_profile_registry_from_env
+from libattest.ra.env import (
+    RaEnvConfig,
+    RouteConfig,
+    build_profile_registry,
+    build_profile_registry_from_env,
+)
 
 ID_TCG_ATTEST_QUOTE = get_oid_by_name("tcg-attest-quote")
 ID_TCG_ATTEST_CERTIFY = get_oid_by_name("tcg-attest-certify")
@@ -118,3 +123,58 @@ def test_engine_from_env_wires_a_working_engine(monkeypatch: pytest.MonkeyPatch)
 
     assert engine.profiles.by_statement(ID_TCG_ATTEST_QUOTE) is not None
     assert engine.nonce_store is not None
+
+
+# ── the environment as one object, and profiles chosen by name ───────────────────
+def test_the_config_can_be_built_without_touching_the_process_environment() -> None:
+    """GIVEN a plain mapping THEN the RA is configurable without monkeypatching os.environ."""
+    config = RaEnvConfig.from_env(
+        {"VERIFIER_OID_ROUTES": json.dumps({ID_TCG_ATTEST_QUOTE: "http://tpm:8444"}), "TPM_QUOTE_PCRS": "0,7"}
+    )
+
+    assert config.oid_routes[ID_TCG_ATTEST_QUOTE] == RouteConfig(url="http://tpm:8444")
+    assert config.quote_pcrs == [0, 7]
+    assert build_profile_registry(config).by_statement(ID_TCG_ATTEST_QUOTE) is not None
+
+
+def test_a_route_can_name_the_profile_that_handles_it() -> None:
+    """GIVEN an explicit profile name THEN that factory builds the route.
+
+    Which profile an OID gets used to be a property of this module's hardcoded OID
+    list; a deployment with its own quote OID had no way to say so.
+    """
+    own_oid = "1.3.6.1.4.1.99999.42"
+    config = RaEnvConfig.from_env(
+        {"VERIFIER_OID_ROUTES": json.dumps({own_oid: {"url": "http://tpm:8444", "profile": "tpm-quote"}})}
+    )
+
+    profile = build_profile_registry(config).by_statement(own_oid)
+
+    assert profile is not None
+    assert profile.resp_info_label == "TPM20QuoteRespInfo", "it was built as a quote profile, not an opaque one"
+    assert profile.build_resp_info(0x000B) is not None
+
+
+def test_an_unnamed_route_is_still_opaque_evidence() -> None:
+    """GIVEN no profile name THEN the pre-existing jwt_profile default applies."""
+    own_oid = "1.3.6.1.4.1.99999.43"
+    config = RaEnvConfig.from_env({"VERIFIER_OID_ROUTES": json.dumps({own_oid: "http://sw:9000"})})
+
+    profile = build_profile_registry(config).by_statement(own_oid)
+
+    assert profile is not None
+    assert profile.build_resp_info(0x000B) is None
+
+
+def test_an_unknown_profile_name_is_refused_at_startup() -> None:
+    """GIVEN a typo in the profile name THEN fail loudly rather than silently fall back."""
+    with pytest.raises(RuntimeError, match="unknown profile"):
+        RaEnvConfig.from_env(
+            {"VERIFIER_OID_ROUTES": json.dumps({"1.2.3": {"url": "http://v", "profile": "tpm-qoute"}})}
+        )
+
+
+def test_a_route_object_without_a_url_is_refused() -> None:
+    """GIVEN a route object missing its url THEN say so instead of routing nowhere."""
+    with pytest.raises(RuntimeError, match="has no 'url'"):
+        RaEnvConfig.from_env({"VERIFIER_OID_ROUTES": json.dumps({"1.2.3": {"profile": "jwt"}})})

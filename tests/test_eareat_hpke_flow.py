@@ -7,8 +7,10 @@
 Exercises the full privacy-preserving EAR/EAT chain as the demo runs it, using ONLY
 libattest structures (no hand-rolled ASN.1):
 
-  1. CMP nonce-freshness exchange — verifier publishes its HPKE key in a ``NonceResponse``
-     (libattest ``NonceResponse``); the attester parses it.
+  1. CMP nonce-freshness exchange — the **RA** assembles a ``NonceResponse`` publishing
+     the verifier's HPKE key (the verifier publishes the key; issuing the nonce and
+     packaging the response is the RA's job, see
+     :func:`~libattest.ra.profile.hpke_profile`); the attester parses it.
   2. Attester builds the encrypted evidence ``AttestationBundle`` (libattest CSR
      attestation-statement structures + jose_hpke + CMW record).
   3. Verifier decodes the bundle, HPKE-opens, verifies the inner EAT-JWS, appraises, and
@@ -26,8 +28,8 @@ from pyasn1.codec.der import decoder, encoder
 
 from libattest import get_nonce_request_oid_for_name, get_nonce_response_oid_for_name
 from libattest.formats import eareat_hpke as evidence
-from libattest.formats.eat_ear import cwt_jwt_utils
 from libattest.formats.csrattest import NonceRequest, NonceResponse
+from libattest.formats.eat_ear import cwt_jwt_utils
 from libattest.verifier.eareat_hpke import EarEatHpkeVerifier
 from libattest.x509 import decode_cmw_json_record, encode_cmw_json_record
 
@@ -41,13 +43,19 @@ def _verifier(attester: ec.EllipticCurvePrivateKey) -> EarEatHpkeVerifier:
     return EarEatHpkeVerifier(attestation_public_key=pem)
 
 
+def _nonce_response(verifier: EarEatHpkeVerifier, nonce: bytes = NONCE, *, expiry: int | None = None) -> bytes:
+    """Assemble the ``NonceResponse`` an RA would send, publishing the verifier's key."""
+    recipient = evidence.hpke_key_from_spki_der(verifier.evidence_encryption_spki_der())
+    return evidence.build_evidence_enc_nonce_response(nonce, recipient, expiry=expiry)
+
+
 def test_full_chain_affirming() -> None:
     """Verify the nonce exchange, JOSE-HPKE evidence, and affirming appraisal chain."""
     attester = ec.generate_private_key(ec.SECP256R1())
     verifier = _verifier(attester)
 
     # 1. CMP nonce exchange: verifier hands the attester the nonce + its HPKE key.
-    nonce_resp_der = verifier.nonce_response(NONCE, expiry=300)
+    nonce_resp_der = _nonce_response(verifier, expiry=300)
     nonce, hpke_key, type_oid = evidence.parse_evidence_enc_nonce_response(nonce_resp_der)
     assert nonce == NONCE
     assert type_oid == get_nonce_response_oid_for_name("jose-hpke-evidence-params")
@@ -72,7 +80,7 @@ def test_full_chain_wrong_claim_contraindicated() -> None:
     """Reject evidence whose mock claim does not satisfy the verifier policy."""
     attester = ec.generate_private_key(ec.SECP256R1())
     verifier = _verifier(attester)
-    _, hpke_key, _ = evidence.parse_evidence_enc_nonce_response(verifier.nonce_response(NONCE))
+    _, hpke_key, _ = evidence.parse_evidence_enc_nonce_response(_nonce_response(verifier))
     assert isinstance(hpke_key, ec.EllipticCurvePublicKey)
     bundle_der = evidence.sign_and_build_evidence_bundle(
         {"mock_claim": "insecure"},
@@ -87,7 +95,7 @@ def test_full_chain_tampered_bundle_contraindicated() -> None:
     """Reject a JOSE-HPKE evidence bundle after ciphertext tampering."""
     attester = ec.generate_private_key(ec.SECP256R1())
     verifier = _verifier(attester)
-    _, hpke_key, _ = evidence.parse_evidence_enc_nonce_response(verifier.nonce_response(NONCE))
+    _, hpke_key, _ = evidence.parse_evidence_enc_nonce_response(_nonce_response(verifier))
     assert isinstance(hpke_key, ec.EllipticCurvePublicKey)
     bundle_der = bytearray(
         evidence.sign_and_build_evidence_bundle({"mock_claim": "secure"}, attester, hpke_key, nonce=NONCE)
